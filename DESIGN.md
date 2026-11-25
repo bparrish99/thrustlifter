@@ -2,7 +2,7 @@
 
 A tribute to the *feel* of the BBC Micro's Thrust, flown in a helicopter. Fly down,
 pick up a heavy orb on a rigid rod, and lug it through increasingly tight terrain
-to a drop zone. The orb swings like a pendulum under the same gravity you fight,
+to an orb bowl. The orb swings like a pendulum under the same gravity you fight,
 and its momentum pushes and pulls the craft.
 
 **Core principle: flying with the orb is the hardest part of the game. Combat never is,
@@ -20,8 +20,11 @@ no matter how hard a level gets.** Every system gets judged against that.
 | Missile (Fire 1) | Fires straight out of the nose. Aim with tilt plus facing. |
 | Bomb (Fire 2) | Drops beneath you, for targets below (limited tilt can't aim down). **Disabled while the orb is attached.** |
 | Tether | **Rigid rod** (rope makes it too easy). The rod is a true two-way constraint: the orb drags and shoves the heli. |
-| Pickup | Hold tether within rod length of the orb, then pull away. The rod locks at full length (Thrust-style; no "tractor beam" as a separate system). |
-| Collision | Heli or orb touching anything = death. The exceptions are skids landing gently and level on a pad, and the rod (it passes through terrain for now). The rod crossing the rotor = "rotor strike" death. |
+| Pickup | Hold tether (Space) within rod length of the orb, then pull away. After a release you must let go of Space before you can tether again. The rod locks at full length (Thrust-style; no "tractor beam" as a separate system). |
+| Delivery | A small **orb bowl** (cup radius 28 vs orb radius 16). **Space while carrying releases the orb**, which keeps its momentum, so drops and "layups" work. **The bowl is the only thing the orb can touch safely**: it bounces around in the cup and is delivered once it **comes to rest in the bottom**. Within the bowl it's sturdy, shattering only on a head-on impact above **max impact** (default 240). Lowering it onto the bowl on the rod also works (a gentle touch auto-releases). |
+| Orb destruction | The orb **explodes if it touches anything except the bowl** (ground, turrets), carried or dropped, **or if it's shot** (by anything, including your own weapons). **The pilot does not die.** The orb respawns on its pedestal after ~2s. |
+| Mission complete | Choplifter-style: after the orb is in the bowl, **fly back and land on your start pad**. A HUD hint points the way home. |
+| Collision | Heli touching anything = death (terrain, turrets, a loose orb). The exception is skids landing gently and level on a pad. The rod passes through terrain for now. The rod crossing the rotor = "rotor strike" death. |
 | Out of scope | No reactor, no inverse gravity. Probably no tractor beam. |
 | Leave room for | Fuel, shields (HUD space is reserved; pads could refuel). |
 | Gravity | Gentle, Thrust-like. Playtest-tuned defaults: gravity 165, thrust 450, max horizontal speed 250, dive 115. The first defaults (320/850) were far too violent. With the orb, full thrust holds altitude up to ~44° of tilt, so max tilt (45°) is right at the edge. |
@@ -29,7 +32,7 @@ no matter how hard a level gets.** Every system gets judged against that.
 
 ## Milestones
 
-- **M0, lug test** (current): one surface level, heli, orb, rod, drop zone, inert turrets, missiles/bombs, live tuning panel. *Goal: is carrying the orb fun?*
+- **M0, lug test** (current): one surface level, heli, orb, rod, orb bowl, inert turrets, missiles/bombs, live tuning panel. *Goal: is carrying the orb fun?*
 - **M1, combat basics**: turrets that shoot, flying enemies, damage rules, fuel/shields decision.
 - **M2, caverns**: underground levels, camera for tight spaces, level sequencing, a level editor.
 - **M3, glitz pass**: WebGL bloom, audio, screen effects, menus.

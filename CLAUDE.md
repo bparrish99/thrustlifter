@@ -18,6 +18,6 @@ terms of how the game plays, not implementation.
 - `src/game.ts`: game state and rules: collision, landing, pickup, delivery, weapons, particles. Fixed 240 Hz substeps.
 - `src/render.ts`: all drawing (faux-vector glow). No game logic.
 - `src/input.ts`: keyboard + gamepad → `FrameInput`
-- `src/levels/*.json`: level data (polygons, pads, orb, drop zone, targets)
+- `src/levels/*.json`: level data (polygons, pads, orb, bowl, targets)
 
 Conventions: y points down; tilt > 0 = rotor tilted right; `window.game` is exposed for console poking and the screenshot script.

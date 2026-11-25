@@ -50,6 +50,13 @@ export function segmentIntersectionT(a: Vec, b: Vec, c: Vec, d: Vec): number | n
   return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? t : null;
 }
 
+export function closestPointSegment(p: Vec, a: Vec, b: Vec): Vec {
+  const ab = sub(b, a);
+  const l2 = dot(ab, ab);
+  const t = l2 === 0 ? 0 : clamp(dot(sub(p, a), ab) / l2, 0, 1);
+  return { x: a.x + ab.x * t, y: a.y + ab.y * t };
+}
+
 export function distPointSegment(p: Vec, a: Vec, b: Vec): number {
   const ab = sub(b, a);
   const l2 = dot(ab, ab);

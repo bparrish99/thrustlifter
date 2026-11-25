@@ -34,7 +34,7 @@ const C = {
   bgBottom: '#120630',
   terrain: '#22e6ff',
   startPad: '#3dff8a',
-  dropPad: '#ffb020',
+  bowl: '#ffb020',
   rotor: '#e8f6ff',
   rod: '#ffffff',
   hud: '#9fe8ff',
@@ -146,7 +146,7 @@ export class Renderer {
     ctx.translate(-this.cam.x, -this.cam.y);
 
     this.drawTerrain(game);
-    this.drawDropZone(game);
+    this.drawBowl(game);
     this.drawTargets(game);
     this.drawOrb(game);
     if (game.alive) this.drawHeli(game);
@@ -255,7 +255,7 @@ export class Renderer {
     for (const p of this.terrainPaths) glow(ctx, p, edge, 2, config.glow);
 
     for (const { pad, pts } of game.level.padPolygons) {
-      const col = pad.kind === 'start' ? C.startPad : C.dropPad;
+      const col = C.startPad;
       const body = new Path2D();
       pts.forEach((v, i) => (i ? body.lineTo(v.x, v.y) : body.moveTo(v.x, v.y)));
       body.closePath();
@@ -279,33 +279,51 @@ export class Renderer {
     }
   }
 
-  private drawDropZone(game: Game): void {
+  private drawBowl(game: Game): void {
     const ctx = this.ctx;
-    const z = game.level.data.dropZone;
-    const pulse = 0.6 + 0.4 * Math.sin(this.clock * 3);
+    const bowl = game.level.bowl;
     const done = game.orb.delivered;
-    const col = C.dropPad;
+    const col = C.bowl;
+    const pulse = 0.6 + 0.4 * Math.sin(this.clock * 3);
+
+    const body = new Path2D();
+    bowl.pts.forEach((v, i) => (i ? body.lineTo(v.x, v.y) : body.moveTo(v.x, v.y)));
+    body.closePath();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgb(14,10,4)';
+    ctx.fill(body);
+
+    // warm glow pooled in the cup
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(255,176,32,${done ? 0.1 : 0.03 + 0.03 * pulse})`;
-    ctx.fillRect(z.x, z.y, z.w, z.h);
-    ctx.setLineDash([14, 10]);
-    ctx.lineDashOffset = -this.clock * 30;
-    const r = new Path2D();
-    r.rect(z.x, z.y, z.w, z.h);
-    glow(ctx, r, col, 1.5, (done ? 1 : 0.5 + 0.4 * pulse) * config.glow);
-    ctx.setLineDash([]);
-    // chevrons
-    for (let i = 0; i < 3; i++) {
-      const cy = z.y - 50 + i * 14 + ((this.clock * 20) % 14);
-      const c = new Path2D();
-      c.moveTo(z.x + z.w / 2 - 14, cy);
-      c.lineTo(z.x + z.w / 2, cy + 10);
-      c.lineTo(z.x + z.w / 2 + 14, cy);
-      glow(ctx, c, col, 2, (0.3 + i * 0.25) * config.glow);
-    }
+    const g = ctx.createRadialGradient(bowl.cx, bowl.rest.y, 0, bowl.cx, bowl.rest.y, bowl.innerR * 2.2);
+    g.addColorStop(0, `rgba(255,176,32,${done ? 0.45 : 0.12 + 0.1 * pulse})`);
+    g.addColorStop(1, 'rgba(255,176,32,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(bowl.cx, bowl.rest.y, bowl.innerR * 2.2, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
-    text(ctx, done ? 'DELIVERED' : 'DROP ZONE', z.x + z.w / 2, z.y - 64, 16, col, 'center');
+
+    glow(ctx, body, col, 1.8, (done ? 1.2 : 0.8 + 0.2 * pulse) * config.glow);
+    // rim lights
+    const blink = Math.floor(this.clock * 3) % 2 === 0;
+    for (const side of [-1, 1]) {
+      dot(ctx, bowl.cx + side * (bowl.innerR + 6), bowl.rimY - 1, 1.8, blink || done ? col : '#ffffff');
+    }
+
+    if (!done) {
+      // chevrons pointing into the cup
+      for (let i = 0; i < 3; i++) {
+        const cy = bowl.rimY - 70 + i * 14 + ((this.clock * 20) % 14);
+        const c = new Path2D();
+        c.moveTo(bowl.cx - 12, cy);
+        c.lineTo(bowl.cx, cy + 9);
+        c.lineTo(bowl.cx + 12, cy);
+        glow(ctx, c, col, 1.8, (0.25 + i * 0.25) * config.glow);
+      }
+    }
+    text(ctx, done ? 'DELIVERED' : 'ORB BOWL', bowl.cx, bowl.rimY - 86, 14, col, 'center', done ? 1 : 0.85);
   }
 
   private drawTargets(game: Game): void {
@@ -334,15 +352,14 @@ export class Renderer {
     const orb = game.orb;
     const R = config.orbRadius;
     let pos = orb.pos;
-    let alpha = 1;
-    let r = R;
+    const alpha = 1;
+    const r = R;
     if (orb.delivered) {
-      const t = game.time - orb.deliveredAt;
-      alpha = Math.max(0, 1 - t / 2.5);
-      r = R * (1 + t * 0.6);
-      pos = { x: orb.pos.x, y: orb.pos.y - t * 40 };
-      if (alpha <= 0) return;
-    } else if (!game.alive && !orb.attached && orb.pos.x < -9999) {
+      // settle from where it touched down into the bottom of the cup
+      const k = 1 - Math.exp(-(game.time - orb.deliveredAt) * 6);
+      const rest = game.level.bowl.rest;
+      pos = { x: lerp(orb.pos.x, rest.x, k), y: lerp(orb.pos.y, rest.y, k) };
+    } else if (orb.pos.x < -9999) {
       return;
     }
 
@@ -354,7 +371,14 @@ export class Renderer {
         rod.moveTo(a.x, a.y);
         rod.lineTo(pos.x, pos.y);
         glow(ctx, rod, C.rod, 1.6, 0.8 * config.glow);
-      } else if (game.beam) {
+      } else if (game.orb.delivered && game.phase === 'playing' && game.alive) {
+      const off = game.padOffset();
+      const arrow = off < 0 ? '◀◀' : '▶▶';
+      const label = Math.abs(off) < 120 ? 'LAND ON YOUR PAD' : `RETURN TO PAD  ${Math.abs(off).toFixed(0)}`;
+      text(ctx, off < 0 ? `${arrow}  ${label}` : `${label}  ${arrow}`, this.w / 2, this.h - 110, 15, '#3dff8a', 'center', 0.75 + 0.25 * Math.sin(this.clock * 5));
+    } else if (game.orb.attached && game.orbApproach()) {
+      text(ctx, 'SPACE TO RELEASE', this.w / 2, this.h - 110, 13, COLORS.orb, 'center', 0.7);
+    } else if (game.beam) {
         ctx.save();
         ctx.setLineDash([4, 6]);
         ctx.lineDashOffset = -this.clock * 60;
@@ -648,7 +672,7 @@ export class Renderer {
     const alive = game.targets.filter((t) => t.alive).length;
     text(ctx, `TURRETS ${alive}/${game.targets.length}`, this.w - 24, 34, 14, COLORS.target, 'right');
     text(ctx, `DEATHS ${game.deaths}`, this.w - 24, 54, 12, C.hud, 'right', 0.8);
-    text(ctx, `TIME ${game.time.toFixed(1)}`, this.w - 24, 72, 12, C.hud, 'right', 0.8);
+    text(ctx, `TIME ${(game.completedAt ?? game.time).toFixed(1)}`, this.w - 24, 72, 12, C.hud, 'right', 0.8);
 
     // instrument cluster (room reserved to the right of it for FUEL / SHIELD later)
     const bx = 24;
@@ -701,8 +725,15 @@ export class Renderer {
     text(ctx, `TILT ${td >= 0 ? '+' : ''}${td.toFixed(0)}°`, gx, gy + 18, 11, C.hud, 'center', 0.8);
 
     text(ctx, h.facing === 1 ? 'FACING ▶' : '◀ FACING', gx + 90, by - 14, 13, COLORS.heli, 'center');
-    const orbState = game.orb.delivered ? 'DELIVERED' : game.orb.attached ? 'ON ROD' : 'NOT HELD';
+    const orbState = game.orb.delivered ? 'DELIVERED' : game.orb.attached ? 'ON ROD' : game.orb.free ? 'DROPPED' : 'NOT HELD';
     text(ctx, `ORB ${orbState}`, gx + 90, by + 4, 11, COLORS.orb, 'center', game.orb.attached ? 1 : 0.6);
+
+    const approach = game.orbApproach();
+    if (approach) {
+      const col = approach.safe ? '#3dff8a' : '#ff4a4a';
+      text(ctx, `ORB SPEED ${approach.speed.toFixed(0)}`, this.w / 2, this.h - 150, 18, col, 'center');
+      text(ctx, `max impact ${config.orbMaxImpact}`, this.w / 2, this.h - 130, 11, C.hud, 'center', 0.7);
+    }
 
     if (game.bombBlockedFlash > 0) {
       text(ctx, 'BOMB BAY BLOCKED BY ORB', this.w / 2, this.h - 110, 13, COLORS.bomb, 'center', game.bombBlockedFlash);
@@ -724,7 +755,7 @@ export class Renderer {
     if (this.helpVisible) {
       const lines = [
         '←/→ or A/D  tilt     ↑ or W  rotor     ↓ or S  dive     C or L  flip facing',
-        'Z or J  missile      X or K  bomb      SPACE (hold)  tether orb',
+        'Z or J  missile      X or K  bomb      SPACE  hold: tether · tap: release',
         'R restart · P pause · T tuning panel · H hide this',
       ];
       lines.forEach((l, i) => text(ctx, l, this.w / 2, this.h - 70 + i * 17, 12, C.hud, 'center', 0.55));

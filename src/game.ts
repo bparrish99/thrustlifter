@@ -1,6 +1,6 @@
 import { config } from './config';
 import { buildLevel, segmentsNear, type Level, type LevelData, type PadData, type Segment } from './level';
-import { add, deg, dist, distPointSegment, dot, inRect, len, scale, segmentIntersectionT, segmentsIntersect, sub, type Vec } from './math';
+import { add, closestPointSegment, deg, dist, distPointSegment, dot, len, scale, segmentIntersectionT, segmentsIntersect, sub, type Vec } from './math';
 import {
   ANCHOR,
   BOMB_BAY,
@@ -27,13 +27,15 @@ export interface FrameInput {
   fire: boolean;
   bomb: boolean;
   flip: boolean; // edge
-  pickup: boolean;
+  pickup: boolean; // held: tether
+  pickupPressed: boolean; // edge: release when carrying
   restart: boolean; // edge
 }
 
 export interface Orb extends Body {
   home: Vec;
   attached: boolean;
+  free: boolean; // released: simulated, bounces and rolls
   delivered: boolean;
   deliveredAt: number;
 }
@@ -134,6 +136,11 @@ export class Game {
   rotorSpin = 0; // visual only: blades ease toward throttle
   bombBlockedFlash = 0;
   lastCrash = '';
+  lastOrbLoss = '';
+  completedAt: number | null = null;
+  private tetherArmed = true; // must let go of Space after a release before tethering again
+  private orbLostTimer = 0;
+  private settleTime = 0;
 
   private acc = 0;
   private missileCd = 0;
@@ -158,6 +165,7 @@ export class Game {
       mass: this.cfg.orbMass,
       home: { ...d.orb },
       attached: false,
+      free: false,
       delivered: false,
       deliveredAt: 0,
     };
@@ -167,10 +175,14 @@ export class Game {
     this.shards = [];
     this.deaths = 0;
     this.time = 0;
+    this.orbLostTimer = 0;
+    this.settleTime = 0;
+    this.tetherArmed = true;
+    this.completedAt = null;
     this.phase = 'playing';
     this.phaseTime = 0;
     this.spawnHeli();
-    this.flash('LIFT THE ORB', 'deliver it to the drop zone', COLORS.orb, 3);
+    this.flash('LIFT THE ORB', 'get it into the bowl', COLORS.orb, 3);
   }
 
   private spawnHeli(): void {
@@ -193,6 +205,7 @@ export class Game {
       return;
     }
     if (input.flip && this.alive) this.heli.facing = this.heli.facing === 1 ? -1 : 1;
+    if (input.pickupPressed && this.alive && this.orb.attached) this.release();
 
     this.acc += dt;
     let n = 0;
@@ -240,20 +253,32 @@ export class Game {
 
       this.collide();
       if (this.alive) this.pickupAndDeliver(input);
+      if (!input.pickup) this.tetherArmed = true;
       if (this.alive) this.weapons(input, dt);
     }
 
+    if (orb.free) this.stepFreeOrb(dt);
+    if (this.orbLostTimer > 0) {
+      this.orbLostTimer -= dt;
+      if (this.orbLostTimer <= 0) this.resetOrb();
+    }
     this.stepProjectiles(dt);
   }
 
+  private resetOrb(): void {
+    const orb = this.orb;
+    orb.attached = false;
+    orb.free = false;
+    orb.pos = { ...orb.home };
+    orb.vel = { x: 0, y: 0 };
+    this.orbLostTimer = 0;
+    this.settleTime = 0;
+  }
+
   private respawn(): void {
-    this.phase = this.orb.delivered ? 'complete' : 'playing';
+    this.phase = this.completedAt !== null ? 'complete' : 'playing';
     this.phaseTime = 0;
-    if (!this.orb.delivered) {
-      this.orb.attached = false;
-      this.orb.pos = { ...this.orb.home };
-      this.orb.vel = { x: 0, y: 0 };
-    }
+    if (!this.orb.delivered) this.resetOrb();
     this.spawnHeli();
   }
 
@@ -313,12 +338,133 @@ export class Game {
       const r = cfg.orbRadius;
       const p = orb.pos;
       for (const s of segmentsNear(this.level, p.x - r, p.y - r, p.x + r, p.y + r)) {
-        if (distPointSegment(p, s.a, s.b) < r - 0.5) return this.crash('ORB IMPACT');
+        if (distPointSegment(p, s.a, s.b) >= r - 0.5) continue;
+        if (s.bowl) return this.bowlContact(s);
+        return this.loseOrb('it hit the ground');
       }
       for (const t of this.targets) {
-        if (t.alive && dist(p, targetCentre(t)) < r + TARGET_RADIUS) return this.crash('ORB IMPACT');
+        if (t.alive && dist(p, targetCentre(t)) < r + TARGET_RADIUS) return this.loseOrb('it hit a turret');
       }
     }
+  }
+
+  /** Carried orb touched the bowl: gentle enough = it lets go and the bowl takes it; too hard = shattered. */
+  private bowlContact(s: Segment): void {
+    const impact = this.impactSpeed(s);
+    if (impact <= this.cfg.orbMaxImpact) return this.release();
+    this.loseOrb(`impact ${impact.toFixed(0)} > ${this.cfg.orbMaxImpact}`);
+  }
+
+  /** How hard the orb is moving into a segment (normal component of velocity). */
+  private impactSpeed(s: Segment): number {
+    const c = closestPointSegment(this.orb.pos, s.a, s.b);
+    const d = dist(this.orb.pos, c) || 1;
+    const n = { x: (this.orb.pos.x - c.x) / d, y: (this.orb.pos.y - c.y) / d };
+    return Math.max(0, -dot(this.orb.vel, n));
+  }
+
+  /** Let go of the orb. It keeps its momentum. */
+  private release(): void {
+    const orb = this.orb;
+    if (!orb.attached) return;
+    orb.attached = false;
+    orb.free = true;
+    this.tetherArmed = false;
+    this.settleTime = 0;
+    this.ring(heliPoint(this.heli, ANCHOR), 24, COLORS.orb, 0.3);
+  }
+
+  /** A released orb: gravity, bounces, rolling, shattering on hard hits, settling into the bowl. */
+  private stepFreeOrb(dt: number): void {
+    const cfg = this.cfg;
+    const orb = this.orb;
+    const r = cfg.orbRadius;
+    integrate(orb, { x: 0, y: 0 }, cfg.gravity, cfg.orbDrag, dt);
+
+    // Only the bowl is soft: touching ground or a turret destroys the orb.
+    const contacts: { n: Vec; pen: number }[] = [];
+    for (const s of segmentsNear(this.level, orb.pos.x - r, orb.pos.y - r, orb.pos.x + r, orb.pos.y + r)) {
+      const c = closestPointSegment(orb.pos, s.a, s.b);
+      const d = dist(orb.pos, c);
+      if (d >= r || d < 1e-6) continue;
+      if (!s.bowl) return this.loseOrb('it hit the ground');
+      contacts.push({ n: { x: (orb.pos.x - c.x) / d, y: (orb.pos.y - c.y) / d }, pen: r - d });
+    }
+    for (const t of this.targets) {
+      if (t.alive && dist(orb.pos, targetCentre(t)) < r + TARGET_RADIUS) return this.loseOrb('it hit a turret');
+    }
+    for (const { n, pen } of contacts) {
+      orb.pos.x += n.x * pen;
+      orb.pos.y += n.y * pen;
+      const vn = dot(orb.vel, n);
+      if (vn >= 0) continue;
+      const impact = -vn;
+      if (impact > cfg.orbMaxImpact) return this.loseOrb(`impact ${impact.toFixed(0)} > ${cfg.orbMaxImpact}`);
+      const e = impact < 25 ? 0 : cfg.orbBounce; // small knocks don't bounce, so it can settle
+      const tx = orb.vel.x - vn * n.x;
+      const ty = orb.vel.y - vn * n.y;
+      const keep = 1 - 0.6 * dt * 10; // rolling friction along the surface
+      orb.vel.x = tx * keep - e * vn * n.x;
+      orb.vel.y = ty * keep - e * vn * n.y;
+    }
+
+    // delivered once it comes to rest in the cup
+    const bowl = this.level.bowl;
+    const inCup = Math.abs(orb.pos.x - bowl.cx) < bowl.innerR && orb.pos.y > bowl.rimY;
+    if (inCup && len(orb.vel) < 25) {
+      this.settleTime += dt;
+      if (this.settleTime > 0.35) this.deliver();
+    } else {
+      this.settleTime = 0;
+    }
+  }
+
+  /** Orb destroyed (carried or dropped): the pilot lives, the orb respawns on its pedestal. */
+  private loseOrb(why: string): void {
+    const orb = this.orb;
+    if (orb.delivered || this.orbLostTimer > 0) return;
+    orb.attached = false;
+    this.beam = false;
+    this.explode(orb.pos, 60, 300, COLORS.orb);
+    for (let k = 0; k < 8; k++) {
+      const a0 = (k * Math.PI) / 4;
+      const a1 = a0 + Math.PI / 4;
+      const r = this.cfg.orbRadius;
+      this.shatter({ x: orb.pos.x + Math.cos(a0) * r, y: orb.pos.y + Math.sin(a0) * r }, { x: orb.pos.x + Math.cos(a1) * r, y: orb.pos.y + Math.sin(a1) * r }, orb.vel, COLORS.orb);
+    }
+    this.shake = Math.max(this.shake, 0.5);
+    this.lastOrbLoss = why;
+    orb.free = false;
+    orb.pos = { x: -99999, y: -99999 };
+    orb.vel = { x: 0, y: 0 };
+    this.orbLostTimer = 2;
+    this.flash('ORB DESTROYED', `${why}  ·  a new one is back on the pedestal`, COLORS.orb, 2);
+  }
+
+  private deliver(): void {
+    const orb = this.orb;
+    orb.attached = false;
+    orb.free = false;
+    orb.delivered = true;
+    orb.deliveredAt = this.time;
+    orb.vel = { x: 0, y: 0 };
+    const at = this.level.bowl.rest;
+    this.ring(at, 140, '#ffb020', 1);
+    this.ring(at, 90, COLORS.orb, 0.8);
+    this.explode(at, 50, 220, '#ffb020');
+    this.flash('ORB DELIVERED', 'now return to your pad', '#ffb020', 3);
+  }
+
+  /** Landed back on the start pad with the orb in the bowl: mission complete. */
+  private complete(): void {
+    this.phase = 'complete';
+    this.completedAt = this.time;
+    const h = this.heli;
+    this.ring(h.pos, 160, '#3dff8a', 1.2);
+    this.ring(h.pos, 100, '#ffb020', 0.9);
+    this.explode({ x: h.pos.x, y: h.pos.y - 30 }, 70, 260, '#3dff8a');
+    const d = this.deaths === 1 ? '1 death' : `${this.deaths} deaths`;
+    this.flash('MISSION COMPLETE', `${this.time.toFixed(1)}s  ·  ${d}  ·  press R to fly again`, '#3dff8a', 1e9);
   }
 
   private land(pad: PadData): void {
@@ -328,6 +474,7 @@ export class Game {
     h.tilt = 0;
     h.tiltTarget = 0;
     h.pos.y = pad.y - SKID_Y - 0.05;
+    if (pad.kind === 'start' && this.orb.delivered && this.phase === 'playing') this.complete();
   }
 
   private crash(reason: string): void {
@@ -358,34 +505,21 @@ export class Game {
     if (orb.delivered) return;
 
     if (!orb.attached) {
-      if (!input.pickup) return;
+      if (!input.pickup || !this.tetherArmed || this.orbLostTimer > 0) return;
       const anchor = heliPoint(h, ANCHOR);
       const d = dist(anchor, orb.pos);
       if (d > L + 0.5) return;
       this.beam = true;
-      // Lock the rod once we reach full length while moving away (or still),
+      // Lock the rod once we reach full length while separating (or still),
       // so we never ram the orb into the ground on attach.
       const dir = scale(sub(orb.pos, anchor), 1 / Math.max(d, 1e-6));
-      if (d >= L - 0.5 && dot(h.vel, dir) <= 5) {
+      if (d >= L - 0.5 && dot(sub(h.vel, orb.vel), dir) <= 5) {
         orb.attached = true;
-        orb.vel = { x: 0, y: 0 };
+        orb.free = false;
         solveRod(h, anchor, orb, L, h.landed);
         this.flash('ORB SECURED', undefined, COLORS.orb, 1.4);
         this.ring(orb.pos, 50, COLORS.orb, 0.5);
       }
-      return;
-    }
-
-    if (inRect(orb.pos, this.level.data.dropZone)) {
-      orb.attached = false;
-      orb.delivered = true;
-      orb.deliveredAt = this.time;
-      orb.vel = { x: 0, y: 0 };
-      this.phase = 'complete';
-      this.ring(orb.pos, 140, '#ffb020', 1);
-      this.ring(orb.pos, 90, COLORS.orb, 0.8);
-      this.explode(orb.pos, 60, 260, '#ffb020');
-      this.flash('ORB DELIVERED', `time ${this.time.toFixed(1)}s  ·  press R to fly again`, '#ffb020', 1e9);
     }
   }
 
@@ -438,7 +572,12 @@ export class Game {
       p.life -= dt;
 
       let hit: Vec | null = null;
-      for (const t of this.targets) {
+      const orb = this.orb;
+      if (!orb.delivered && this.orbLostTimer <= 0 && distPointSegment(orb.pos, prev, p.pos) < this.cfg.orbRadius + 2) {
+        hit = p.pos;
+        this.loseOrb('it was shot');
+      }
+      for (const t of hit ? [] : this.targets) {
         if (t.alive && distPointSegment(targetCentre(t), prev, p.pos) < TARGET_RADIUS + 3) {
           t.alive = false;
           hit = p.pos;
@@ -637,9 +776,23 @@ export class Game {
     return (m * this.cfg.gravity) / this.cfg.maxThrust;
   }
 
+  /** Orb speed readout for the HUD when carrying it near the bowl, else null. */
+  orbApproach(): { speed: number; safe: boolean } | null {
+    if (!this.alive || !(this.orb.attached || this.orb.free)) return null;
+    if (dist(this.orb.pos, this.level.bowl.rest) > 320) return null;
+    const speed = len(this.orb.vel);
+    return { speed, safe: speed <= this.cfg.orbMaxImpact };
+  }
+
+  /** Signed horizontal distance from the heli to the start pad centre (for the return-to-base hint). */
+  padOffset(): number {
+    const p = this.level.startPad;
+    return p.x + p.w / 2 - this.heli.pos.x;
+  }
+
   /** Is the tether currently reachable (for HUD hints)? */
   orbInReach(): boolean {
-    if (!this.alive || this.orb.attached || this.orb.delivered) return false;
+    if (!this.alive || this.orb.attached || this.orb.delivered || this.orbLostTimer > 0) return false;
     return dist(heliPoint(this.heli, ANCHOR), this.orb.pos) <= this.cfg.rodLength + 0.5;
   }
 }

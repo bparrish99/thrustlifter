@@ -28,9 +28,11 @@ export const DEFAULTS = {
   orbRadius: 16,
   orbDrag: 0.04,
   rodLength: 110,
+  orbMaxImpact: 240, // orb shatters if it hits anything head-on faster than this (glancing hits count less)
+  orbBounce: 0.45, // how bouncy a released orb is (0 = dead, 1 = superball)
 
   // Landing (skids on a pad only)
-  landMaxSpeed: 45,
+  landMaxSpeed: 95,
   landMaxTiltDeg: 10,
 
   // Weapons

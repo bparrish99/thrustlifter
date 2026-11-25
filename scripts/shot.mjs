@@ -57,20 +57,25 @@ await page.evaluate(() => {
 await page.waitForTimeout(500);
 await page.screenshot({ path: 'shots/3-crash.png' });
 
-// Drop zone + tuning panel.
+// Orb bowl approach with the orb on the rod, plus tuning panel.
 await page.keyboard.press('KeyR');
 await page.keyboard.press('KeyT');
 await page.evaluate(() => {
   const g = window.game;
-  const z = g.level.data.dropZone;
+  const b = g.level.bowl;
   g.heli.landed = false;
-  g.heli.throttle = 0.6;
-  g.heli.pos = { x: z.x - 160, y: z.y - 40 };
+  g.heli.throttle = 0;
+  g.heli.pos = { x: b.cx - 30, y: b.rimY - 200 };
+  g.heli.vel = { x: 0, y: 0 };
+  g.orb.attached = true;
+  g.orb.pos = { x: b.cx - 30, y: b.rimY - 200 + 16 + 110 };
+  g.orb.vel = { x: 0, y: 0 };
 });
-await page.waitForTimeout(600);
-await page.screenshot({ path: 'shots/4-dropzone-tuning.png' });
+await page.waitForTimeout(250);
+await page.screenshot({ path: 'shots/4-bowl-tuning.png' });
 
 // Close-ups of the helicopter: hovering at full rotor, then flipped and tilted.
+await page.keyboard.press('KeyR');
 await page.keyboard.press('KeyT');
 await page.keyboard.press('KeyH');
 await page.evaluate(() => {

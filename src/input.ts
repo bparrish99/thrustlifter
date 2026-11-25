@@ -4,7 +4,7 @@ import type { FrameInput } from './game';
  * Keyboard (two layouts work at once):
  *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z missile, X bomb, C flip
  *   WASD:   A/D tilt, W rotor, S dive   with  J missile, K bomb, L flip
- *   Space   hold = tether (pick up orb)
+ *   Space   hold = tether (pick up orb); press while carrying = release
  *   R restart · P/Esc pause · T tuning panel · H help
  *
  * Gamepad (standard mapping):
@@ -52,6 +52,7 @@ export class Input {
     let bomb = this.k('KeyX', 'KeyK');
     let flip = this.p('KeyC', 'KeyL');
     let pickup = this.k('Space');
+    let pickupPressed = this.p('Space');
     let restart = this.p('KeyR');
     let pause = this.p('KeyP', 'Escape');
     const toggleTuning = this.p('KeyT', 'Backquote');
@@ -70,6 +71,7 @@ export class Input {
       bomb ||= b(1);
       flip ||= edge(3);
       pickup ||= b(4);
+      pickupPressed ||= edge(4);
       restart ||= edge(9);
       pause ||= edge(8);
       this.prevPad = pad.buttons.map((x) => x.pressed);
@@ -78,7 +80,7 @@ export class Input {
     this.pressed.clear();
     tiltAxis = Math.max(-1, Math.min(1, tiltAxis));
     return {
-      game: { tiltAxis, rotor, dive, fire, bomb, flip, pickup, restart },
+      game: { tiltAxis, rotor, dive, fire, bomb, flip, pickup, pickupPressed, restart },
       meta: { pause, toggleTuning, toggleHelp },
     };
   }

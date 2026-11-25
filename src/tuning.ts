@@ -31,6 +31,8 @@ const FOLDERS: [string, Spec[], boolean][] = [
       ['rodLength', 40, 250, 1, 'rod length'],
       ['orbRadius', 6, 30, 1, 'orb radius'],
       ['orbDrag', 0, 1, 0.01, 'orb drag'],
+      ['orbMaxImpact', 20, 800, 5, 'orb max impact'],
+      ['orbBounce', 0, 0.95, 0.05, 'orb bounce'],
     ],
     true,
   ],
