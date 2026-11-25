@@ -756,7 +756,7 @@ export class Renderer {
       const lines = [
         '←/→ or A/D  tilt     ↑ or W  rotor     ↓ or S  dive     C or L  flip facing',
         'Z or J  missile      X or K  bomb      SPACE  hold: tether · tap: release',
-        'R restart · P pause · T tuning panel · H hide this',
+        'R restart · P pause · M mute · T tuning panel · H hide this',
       ];
       lines.forEach((l, i) => text(ctx, l, this.w / 2, this.h - 70 + i * 17, 12, C.hud, 'center', 0.55));
     }

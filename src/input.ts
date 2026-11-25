@@ -5,7 +5,7 @@ import type { FrameInput } from './game';
  *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z missile, X bomb, C flip
  *   WASD:   A/D tilt, W rotor, S dive   with  J missile, K bomb, L flip
  *   Space   hold = tether (pick up orb); press while carrying = release
- *   R restart · P/Esc pause · T tuning panel · H help
+ *   R restart · P/Esc pause · T tuning panel · H help · M mute
  *
  * Gamepad (standard mapping):
  *   Left stick X tilt · RT (analog) or A rotor · LT (analog) or stick down dive · X/RB missile · B bomb · Y flip
@@ -18,6 +18,7 @@ export interface MetaInput {
   pause: boolean;
   toggleTuning: boolean;
   toggleHelp: boolean;
+  toggleMute: boolean;
 }
 
 export class Input {
@@ -57,6 +58,7 @@ export class Input {
     let pause = this.p('KeyP', 'Escape');
     const toggleTuning = this.p('KeyT', 'Backquote');
     const toggleHelp = this.p('KeyH');
+    const toggleMute = this.p('KeyM');
 
     const pad = firstGamepad();
     if (pad) {
@@ -81,7 +83,7 @@ export class Input {
     tiltAxis = Math.max(-1, Math.min(1, tiltAxis));
     return {
       game: { tiltAxis, rotor, dive, fire, bomb, flip, pickup, pickupPressed, restart },
-      meta: { pause, toggleTuning, toggleHelp },
+      meta: { pause, toggleTuning, toggleHelp, toggleMute },
     };
   }
 }

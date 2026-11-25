@@ -664,7 +664,7 @@ export class Game {
     const h = this.heli;
     this.facingVis += (h.facing - this.facingVis) * (1 - Math.exp(-18 * dt));
     this.rotorSpin += (h.throttle - this.rotorSpin) * (1 - Math.exp(-6 * dt));
-    this.rotorPhase += (3 + this.rotorSpin * 24) * dt; // idles slowly on the pad, whirls at full throttle
+    this.rotorPhase += (9 + this.rotorSpin * 18) * dt; // brisk idle, whirls at full throttle
     this.shake = Math.max(0, this.shake - dt * 2.2);
     this.bombBlockedFlash = Math.max(0, this.bombBlockedFlash - dt * 1.5);
     this.screenFlash = Math.max(0, this.screenFlash - dt * 4);

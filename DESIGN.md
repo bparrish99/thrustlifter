@@ -28,7 +28,14 @@ no matter how hard a level gets.** Every system gets judged against that.
 | Out of scope | No reactor, no inverse gravity. Probably no tractor beam. |
 | Leave room for | Fuel, shields (HUD space is reserved; pads could refuel). |
 | Gravity | Gentle, Thrust-like. Playtest-tuned defaults: gravity 165, thrust 450, max horizontal speed 250, dive 115. The first defaults (320/850) were far too violent. With the orb, full thrust holds altitude up to ~44° of tilt, so max tilt (45°) is right at the edge. |
+| Sound | Procedural (Web Audio, no samples). Rotor chop tempo follows the rotor: a brisk, soft but clearly audible idle chop (~8/s) building to a harder chop (~15/s) at full throttle, over a steady drone with a light low rumble and faint turbine whine. Treble kept soft (it read as a machine gun when bright). The idle chop must sit in an audible band, not just sub-bass. M mutes; volume in the tuning panel. |
 | Look | Colourful faux-vector 80s arcade with modern glitz: additive glow lines, bloom, particles, scanlines, vignette. |
+
+## Core loop
+
+Launch from your pad → fight through the level → grab the orb → deliver it to the bowl → make your way back and land on your pad.
+
+Level-design hook: the return trip doesn't have to retrace the outbound route. Levels can force a **separate path from the bowl back to the pad** (one-way drops, gates that open on delivery, a route that only works without the orb's extra length and weight).
 
 ## Milestones
 

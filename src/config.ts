@@ -50,6 +50,7 @@ export const DEFAULTS = {
   camLookahead: 0.35, // seconds of velocity lead
   camFollow: 4,
   glow: 1,
+  volume: 0.5,
 };
 
 export type Config = typeof DEFAULTS;

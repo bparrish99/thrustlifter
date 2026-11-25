@@ -61,12 +61,13 @@ const FOLDERS: [string, Spec[], boolean][] = [
     false,
   ],
   [
-    'Camera & look',
+    'Camera, look & sound',
     [
       ['viewHeight', 400, 1800, 10, 'view height'],
       ['camLookahead', 0, 1.5, 0.05, 'look-ahead s'],
       ['camFollow', 0.5, 15, 0.1, 'follow speed'],
       ['glow', 0, 2, 0.05, 'glow'],
+      ['volume', 0, 1, 0.05, 'volume'],
     ],
     false,
   ],
