@@ -61,13 +61,27 @@ const FOLDERS: [string, Spec[], boolean][] = [
     false,
   ],
   [
+    'Enemies',
+    [
+      ['turretRange', 100, 1500, 10, 'turret range'],
+      ['turretInterval', 0.3, 8, 0.1, 'turret fire interval'],
+      ['turretCharge', 0, 2, 0.05, 'turret charge-up'],
+      ['turretShotSpeed', 50, 1000, 10, 'turret shot speed'],
+      ['turretLead', 0, 1, 0.05, 'turret aim lead'],
+      ['turretArcDeg', 10, 90, 1, 'turret aim arc °'],
+    ],
+    false,
+  ],
+  [
     'Camera, look & sound',
     [
       ['viewHeight', 400, 1800, 10, 'view height'],
       ['camLookahead', 0, 1.5, 0.05, 'look-ahead s'],
       ['camFollow', 0.5, 15, 0.1, 'follow speed'],
+      ['camGround', 0.55, 0.95, 0.01, 'ground position on screen'],
       ['glow', 0, 2, 0.05, 'glow'],
       ['volume', 0, 1, 0.05, 'volume'],
+      ['sfxVolume', 0, 1.5, 0.05, 'effects volume'],
     ],
     false,
   ],

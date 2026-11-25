@@ -1,5 +1,5 @@
 import { config } from './config';
-import { buildLevel, segmentsNear, type Level, type LevelData, type PadData, type Segment } from './level';
+import { buildLevel, resetGates, segmentsNear, type Level, type LevelData, type PadData, type Segment } from './level';
 import { add, closestPointSegment, deg, dist, distPointSegment, dot, len, scale, segmentIntersectionT, segmentsIntersect, sub, type Vec } from './math';
 import {
   ANCHOR,
@@ -41,7 +41,7 @@ export interface Orb extends Body {
 }
 
 export interface Projectile {
-  kind: 'missile' | 'bomb';
+  kind: 'missile' | 'bomb' | 'enemy';
   pos: Vec;
   vel: Vec;
   life: number;
@@ -51,10 +51,19 @@ export interface Projectile {
   speed?: number; // motor speed along dir, ramps up to missileSpeed
 }
 
-export interface Target {
-  pos: Vec;
+export interface Turret {
+  pos: Vec; // base, on the surface
+  normal: Vec; // direction it faces (out of the surface)
   alive: boolean;
+  aim: number; // barrel angle (radians, world)
+  cooldown: number; // seconds until it may fire
+  charge: number; // 0..1 telegraph glow before a shot
+  tracking: boolean; // has line of sight to the heli
 }
+
+/** Things that happened this frame, for sound (and anything else that wants to react). */
+export type GameEvent =
+  | { type: 'gate' | 'missile' | 'bomb' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'bigImpact' | 'liftoff' | 'land'; pos?: Vec };
 
 export interface Particle {
   pos: Vec;
@@ -98,7 +107,7 @@ export interface Message {
 export type Phase = 'playing' | 'dead' | 'complete';
 
 export const STEP = 1 / 240;
-export const TARGET_RADIUS = 15;
+export const TURRET_RADIUS = 22; // dome size; also the collision size
 const RESPAWN_DELAY = 2.2;
 const CEILING = -1500;
 
@@ -108,6 +117,7 @@ export const COLORS = {
   missile: '#7dffb0',
   bomb: '#ff9a3c',
   target: '#ff4a4a',
+  enemyShot: '#ff6a3d',
   spark: ['#ffffff', '#ffd23f', '#ff8a3d', '#ff3df2'],
   dust: '#7fd6ff',
 };
@@ -117,11 +127,12 @@ export class Game {
   level: Level;
   heli!: HeliState;
   orb!: Orb;
-  targets: Target[] = [];
+  turrets: Turret[] = [];
   projectiles: Projectile[] = [];
   particles: Particle[] = [];
   rings: Ring[] = [];
   shards: Shard[] = [];
+  events: GameEvent[] = [];
   screenFlash = 0;
   message: Message | null = null;
 
@@ -131,9 +142,12 @@ export class Game {
   deaths = 0;
   shake = 0;
   beam = false; // tether beam visible this frame
+  beamProgress = 0; // 0..1: how close the beam is to locking (distance / rod length)
   facingVis = 1; // animated facing for rendering
   rotorPhase = 0;
-  rotorSpin = 0; // visual only: blades ease toward throttle
+  rotorSpin = 0; // eases toward throttle (drives sound intensity)
+  rotorSpeed = 0; // visual rotor speed 0..1: rotorSpin, but never below a floor while airborne
+  private rotorFloor = 0;
   bombBlockedFlash = 0;
   lastCrash = '';
   lastOrbLoss = '';
@@ -147,7 +161,12 @@ export class Game {
   private bombCd = 0;
   private prevBomb = false;
 
-  constructor(data: LevelData) {
+  readonly levelNumber: number;
+  readonly hasNextLevel: boolean;
+
+  constructor(data: LevelData, opts: { levelNumber?: number; hasNextLevel?: boolean } = {}) {
+    this.levelNumber = opts.levelNumber ?? 1;
+    this.hasNextLevel = opts.hasNextLevel ?? false;
     this.level = buildLevel(data);
     this.restart();
   }
@@ -158,7 +177,11 @@ export class Game {
 
   restart(): void {
     const d = this.level.data;
-    this.targets = d.targets.map((t) => ({ pos: { ...t }, alive: true }));
+    this.turrets = d.turrets.map((t) => {
+      const a = deg(t.dir ?? -90);
+      const normal = { x: Math.cos(a), y: Math.sin(a) };
+      return { pos: { x: t.x, y: t.y }, normal, alive: true, aim: a, cooldown: 1 + Math.random() * this.cfg.turretInterval, charge: 0, tracking: false };
+    });
     this.orb = {
       pos: { ...d.orb },
       vel: { x: 0, y: 0 },
@@ -173,12 +196,14 @@ export class Game {
     this.particles = [];
     this.rings = [];
     this.shards = [];
+    this.events = [];
     this.deaths = 0;
     this.time = 0;
     this.orbLostTimer = 0;
     this.settleTime = 0;
     this.tetherArmed = true;
     this.completedAt = null;
+    resetGates(this.level);
     this.phase = 'playing';
     this.phaseTime = 0;
     this.spawnHeli();
@@ -235,6 +260,7 @@ export class Game {
 
       if (h.landed && h.throttle * cfg.maxThrust > h.mass * cfg.gravity) {
         h.landed = false;
+        this.events.push({ type: 'liftoff', pos: h.pos });
       }
 
       if (!h.landed) {
@@ -262,6 +288,7 @@ export class Game {
       this.orbLostTimer -= dt;
       if (this.orbLostTimer <= 0) this.resetOrb();
     }
+    this.stepTurrets(dt);
     this.stepProjectiles(dt);
   }
 
@@ -278,7 +305,10 @@ export class Game {
   private respawn(): void {
     this.phase = this.completedAt !== null ? 'complete' : 'playing';
     this.phaseTime = 0;
-    if (!this.orb.delivered) this.resetOrb();
+    if (!this.orb.delivered) {
+      this.resetOrb();
+      resetGates(this.level);
+    }
     this.spawnHeli();
   }
 
@@ -318,10 +348,10 @@ export class Game {
         }
       }
 
-      for (const t of this.targets) {
-        if (!t.alive || dist(t.pos, h.pos) > HULL_RADIUS + TARGET_RADIUS) continue;
-        const c = targetCentre(t);
-        if (hull.some((hs) => distPointSegment(c, hs.a, hs.b) < TARGET_RADIUS)) return this.crash('HIT A TURRET');
+      for (const t of this.turrets) {
+        if (!t.alive || dist(t.pos, h.pos) > HULL_RADIUS + TURRET_RADIUS) continue;
+        const c = turretCentre(t);
+        if (hull.some((hs) => distPointSegment(c, hs.a, hs.b) < TURRET_RADIUS)) return this.crash('HIT A TURRET');
       }
 
       if (!orb.attached && !orb.delivered && dist(orb.pos, h.pos) < HULL_RADIUS + cfg.orbRadius) {
@@ -342,8 +372,8 @@ export class Game {
         if (s.bowl) return this.bowlContact(s);
         return this.loseOrb('it hit the ground');
       }
-      for (const t of this.targets) {
-        if (t.alive && dist(p, targetCentre(t)) < r + TARGET_RADIUS) return this.loseOrb('it hit a turret');
+      for (const t of this.turrets) {
+        if (t.alive && dist(p, turretCentre(t)) < r + TURRET_RADIUS) return this.loseOrb('it hit a turret');
       }
     }
   }
@@ -372,6 +402,7 @@ export class Game {
     this.tetherArmed = false;
     this.settleTime = 0;
     this.ring(heliPoint(this.heli, ANCHOR), 24, COLORS.orb, 0.3);
+    this.events.push({ type: 'release', pos: orb.pos });
   }
 
   /** A released orb: gravity, bounces, rolling, shattering on hard hits, settling into the bowl. */
@@ -390,8 +421,8 @@ export class Game {
       if (!s.bowl) return this.loseOrb('it hit the ground');
       contacts.push({ n: { x: (orb.pos.x - c.x) / d, y: (orb.pos.y - c.y) / d }, pen: r - d });
     }
-    for (const t of this.targets) {
-      if (t.alive && dist(orb.pos, targetCentre(t)) < r + TARGET_RADIUS) return this.loseOrb('it hit a turret');
+    for (const t of this.turrets) {
+      if (t.alive && dist(orb.pos, turretCentre(t)) < r + TURRET_RADIUS) return this.loseOrb('it hit a turret');
     }
     for (const { n, pen } of contacts) {
       orb.pos.x += n.x * pen;
@@ -434,6 +465,7 @@ export class Game {
     }
     this.shake = Math.max(this.shake, 0.5);
     this.lastOrbLoss = why;
+    this.events.push({ type: 'orbLost', pos: { ...orb.pos } });
     orb.free = false;
     orb.pos = { x: -99999, y: -99999 };
     orb.vel = { x: 0, y: 0 };
@@ -452,7 +484,11 @@ export class Game {
     this.ring(at, 140, '#ffb020', 1);
     this.ring(at, 90, COLORS.orb, 0.8);
     this.explode(at, 50, 220, '#ffb020');
-    this.flash('ORB DELIVERED', 'now return to your pad', '#ffb020', 3);
+    const opening = this.level.gates.filter((gt) => gt.opens === 'delivery' && !gt.open);
+    opening.forEach((gt) => (gt.open = true));
+    if (opening.length) this.events.push({ type: 'gate' });
+    this.flash('ORB DELIVERED', opening.length ? 'a gate has opened · find your way back to the pad' : 'now return to your pad', '#ffb020', 3.5);
+    this.events.push({ type: 'delivered', pos: at });
   }
 
   /** Landed back on the start pad with the orb in the bowl: mission complete. */
@@ -464,7 +500,9 @@ export class Game {
     this.ring(h.pos, 100, '#ffb020', 0.9);
     this.explode({ x: h.pos.x, y: h.pos.y - 30 }, 70, 260, '#3dff8a');
     const d = this.deaths === 1 ? '1 death' : `${this.deaths} deaths`;
-    this.flash('MISSION COMPLETE', `${this.time.toFixed(1)}s  ·  ${d}  ·  press R to fly again`, '#3dff8a', 1e9);
+    this.events.push({ type: 'complete', pos: h.pos });
+    const next = this.hasNextLevel ? 'N next level  ·  R retry' : 'all levels done  ·  R retry';
+    this.flash('MISSION COMPLETE', `${this.time.toFixed(1)}s  ·  ${d}  ·  ${next}`, '#3dff8a', 1e9);
   }
 
   private land(pad: PadData): void {
@@ -474,6 +512,7 @@ export class Game {
     h.tilt = 0;
     h.tiltTarget = 0;
     h.pos.y = pad.y - SKID_Y - 0.05;
+    this.events.push({ type: 'land', pos: h.pos });
     if (pad.kind === 'start' && this.orb.delivered && this.phase === 'playing') this.complete();
   }
 
@@ -487,6 +526,7 @@ export class Game {
     this.explode(h.pos, 90, 420);
     this.screenFlash = 1;
     for (const s of hullWorld(h)) this.shatter(s.a, s.b, h.vel, COLORS.heli);
+    this.events.push({ type: 'heliDown', pos: h.pos });
     if (this.orb.attached) {
       this.explode(this.orb.pos, 50, 300, COLORS.orb);
       this.orb.attached = false;
@@ -510,6 +550,7 @@ export class Game {
       const d = dist(anchor, orb.pos);
       if (d > L + 0.5) return;
       this.beam = true;
+      this.beamProgress = Math.min(1, d / L);
       // Lock the rod once we reach full length while separating (or still),
       // so we never ram the orb into the ground on attach.
       const dir = scale(sub(orb.pos, anchor), 1 / Math.max(d, 1e-6));
@@ -517,7 +558,15 @@ export class Game {
         orb.attached = true;
         orb.free = false;
         solveRod(h, anchor, orb, L, h.landed);
-        this.flash('ORB SECURED', undefined, COLORS.orb, 1.4);
+        this.events.push({ type: 'tether', pos: orb.pos });
+        const sealing = this.level.gates.filter((gt) => gt.closes === 'pickup' && gt.open);
+        sealing.forEach((gt) => (gt.open = false));
+        if (sealing.length) {
+          this.flash('ORB SECURED', 'the way you came in has sealed', COLORS.orb, 2.5);
+          this.events.push({ type: 'gate' });
+        } else {
+          this.flash('ORB SECURED', undefined, COLORS.orb, 1.4);
+        }
         this.ring(orb.pos, 50, COLORS.orb, 0.5);
       }
     }
@@ -544,6 +593,7 @@ export class Game {
         base: { ...h.vel },
         speed,
       });
+      this.events.push({ type: 'missile', pos: heliPoint(h, NOSE) });
     }
 
     const bombEdge = input.bomb && !this.prevBomb;
@@ -555,7 +605,67 @@ export class Game {
       // pushed out of the bay: a little down, a little toward where you're facing
       const vel = { x: h.vel.x + h.facing * cfg.bombForwardSpeed, y: h.vel.y + cfg.bombDropSpeed };
       this.projectiles.push({ kind: 'bomb', pos: heliPoint(h, BOMB_BAY), vel, life: 6 });
+      this.events.push({ type: 'bomb', pos: heliPoint(h, BOMB_BAY) });
     }
+  }
+
+  /** Turrets track the heli, telegraph with a charge glow, then fire. Line of sight and a firing arc required. */
+  private stepTurrets(dt: number): void {
+    const cfg = this.cfg;
+    const h = this.heli;
+    for (const t of this.turrets) {
+      if (!t.alive) continue;
+      const c = turretCentre(t);
+      const base = Math.atan2(t.normal.y, t.normal.x);
+      const arc = deg(cfg.turretArcDeg);
+      let want = base;
+      t.tracking = false;
+      if (this.alive && dist(c, h.pos) < cfg.turretRange) {
+        // aim with partial lead on the heli's motion
+        const tFly = dist(c, h.pos) / cfg.turretShotSpeed;
+        const aimAt = { x: h.pos.x + h.vel.x * tFly * cfg.turretLead, y: h.pos.y + h.vel.y * tFly * cfg.turretLead };
+        const ang = Math.atan2(aimAt.y - c.y, aimAt.x - c.x);
+        const off = wrapAngle(ang - base);
+        if (Math.abs(off) <= arc && this.lineOfSight(c, h.pos)) {
+          t.tracking = true;
+          want = ang;
+        } else {
+          want = base + Math.max(-arc, Math.min(arc, off)) * 0.3; // drift toward you, but can't see you
+        }
+      }
+      // slew the barrel
+      const d = wrapAngle(want - t.aim);
+      const maxTurn = 2.2 * dt;
+      t.aim += Math.max(-maxTurn, Math.min(maxTurn, d));
+
+      t.cooldown -= dt;
+      const canFire = t.tracking && Math.abs(wrapAngle(want - t.aim)) < 0.12;
+      t.charge = canFire && t.cooldown < cfg.turretCharge ? 1 - Math.max(0, t.cooldown) / cfg.turretCharge : Math.max(0, t.charge - dt * 4);
+      if (t.cooldown <= 0) {
+        if (canFire) {
+          const spread = (Math.random() - 0.5) * deg(4);
+          const dir = { x: Math.cos(t.aim + spread), y: Math.sin(t.aim + spread) };
+          const muzzle = { x: c.x + dir.x * TURRET_BARREL, y: c.y + dir.y * TURRET_BARREL };
+          this.projectiles.push({ kind: 'enemy', pos: muzzle, vel: scale(dir, cfg.turretShotSpeed), life: cfg.turretRange / cfg.turretShotSpeed + 0.6 });
+          this.events.push({ type: 'enemyShot', pos: muzzle });
+          for (let i = 0; i < 6; i++) {
+            const a = t.aim + (Math.random() - 0.5) * 0.8;
+            const sp = 60 + Math.random() * 120;
+            const life = 0.15 + Math.random() * 0.15;
+            this.particles.push({ pos: { ...muzzle }, vel: { x: Math.cos(a) * sp, y: Math.sin(a) * sp }, life, maxLife: life, color: COLORS.enemyShot, size: 1, drag: 4, grav: 0 });
+          }
+          t.cooldown = cfg.turretInterval * (0.8 + Math.random() * 0.4);
+          t.charge = 0;
+        } else {
+          t.cooldown = Math.min(cfg.turretCharge * 0.6, cfg.turretInterval); // ready again soon after it reacquires
+        }
+      }
+    }
+  }
+
+  private lineOfSight(a: Vec, b: Vec): boolean {
+    const near = segmentsNear(this.level, Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
+    return !near.some((s) => segmentsIntersect(a, b, s.a, s.b));
   }
 
   private stepProjectiles(dt: number): void {
@@ -572,24 +682,32 @@ export class Game {
       p.life -= dt;
 
       let hit: Vec | null = null;
+      if (p.kind === 'enemy' && this.alive && dist(p.pos, this.heli.pos) < HULL_RADIUS + 10) {
+        const hull = hullWorld(this.heli);
+        if (hull.some((hs) => segmentsIntersect(prev, p.pos, hs.a, hs.b) || distPointSegment(p.pos, hs.a, hs.b) < 2.5)) {
+          hit = p.pos;
+          this.crash('SHOT DOWN');
+        }
+      }
       const orb = this.orb;
-      if (!orb.delivered && this.orbLostTimer <= 0 && distPointSegment(orb.pos, prev, p.pos) < this.cfg.orbRadius + 2) {
+      if (!hit && !orb.delivered && this.orbLostTimer <= 0 && distPointSegment(orb.pos, prev, p.pos) < this.cfg.orbRadius + 2) {
         hit = p.pos;
         this.loseOrb('it was shot');
       }
-      for (const t of hit ? [] : this.targets) {
-        if (t.alive && distPointSegment(targetCentre(t), prev, p.pos) < TARGET_RADIUS + 3) {
+      for (const t of hit || p.kind === 'enemy' ? [] : this.turrets) {
+        if (t.alive && distPointSegment(turretCentre(t), prev, p.pos) < TURRET_RADIUS + TURRET_HIT_SLACK) {
           t.alive = false;
           hit = p.pos;
-          this.explode(targetCentre(t), 70, 360, COLORS.target);
-          const c = targetCentre(t);
+          this.explode(turretCentre(t), 70, 360, COLORS.target);
+          const base = Math.atan2(t.normal.y, t.normal.x);
           for (let k = 0; k < 6; k++) {
-            const a0 = Math.PI + (k * Math.PI) / 6;
+            const a0 = base - Math.PI / 2 + (k * Math.PI) / 6;
             const a1 = a0 + Math.PI / 6;
-            const r = TARGET_RADIUS;
-            this.shatter({ x: c.x + Math.cos(a0) * r, y: c.y + 8 + Math.sin(a0) * r }, { x: c.x + Math.cos(a1) * r, y: c.y + 8 + Math.sin(a1) * r }, { x: 0, y: -120 }, COLORS.target);
+            const r = TURRET_RADIUS;
+            this.shatter({ x: t.pos.x + Math.cos(a0) * r, y: t.pos.y + Math.sin(a0) * r }, { x: t.pos.x + Math.cos(a1) * r, y: t.pos.y + Math.sin(a1) * r }, scale(t.normal, 120), COLORS.target);
           }
-          this.ring(targetCentre(t), 70, COLORS.target, 0.6);
+          this.events.push({ type: 'turretDown', pos: turretCentre(t) });
+          this.ring(turretCentre(t), 70, COLORS.target, 0.6);
           this.shake = Math.max(this.shake, 0.4);
           break;
         }
@@ -606,7 +724,12 @@ export class Game {
           const t = segmentIntersectionT(prev, p.pos, s.a, s.b);
           if (t !== null) {
             hit = { x: prev.x + (p.pos.x - prev.x) * t, y: prev.y + (p.pos.y - prev.y) * t };
-            this.explode(hit, p.kind === 'bomb' ? 40 : 18, p.kind === 'bomb' ? 280 : 180, p.kind === 'bomb' ? COLORS.bomb : COLORS.missile);
+            if (p.kind === 'enemy') {
+              this.explode(hit, 8, 120, COLORS.enemyShot);
+            } else {
+              this.explode(hit, p.kind === 'bomb' ? 40 : 18, p.kind === 'bomb' ? 280 : 180, p.kind === 'bomb' ? COLORS.bomb : COLORS.missile);
+              this.events.push({ type: p.kind === 'bomb' ? 'bigImpact' : 'impact', pos: hit });
+            }
             if (p.kind === 'bomb') this.ring(hit, 45, COLORS.bomb, 0.4);
             break;
           }
@@ -664,10 +787,14 @@ export class Game {
     const h = this.heli;
     this.facingVis += (h.facing - this.facingVis) * (1 - Math.exp(-18 * dt));
     this.rotorSpin += (h.throttle - this.rotorSpin) * (1 - Math.exp(-6 * dt));
-    this.rotorPhase += (9 + this.rotorSpin * 18) * dt; // brisk idle, whirls at full throttle
+    // matches the sound: airborne, the rotor never drops back to pad-idle speed
+    this.rotorFloor += ((h.landed || !this.alive ? 0 : 0.5) - this.rotorFloor) * (1 - Math.exp(-3 * dt));
+    this.rotorSpeed = Math.max(this.rotorSpin, this.rotorFloor);
+    this.rotorPhase += (9 + this.rotorSpeed * 18) * dt; // brisk idle, whirls at full throttle
     this.shake = Math.max(0, this.shake - dt * 2.2);
     this.bombBlockedFlash = Math.max(0, this.bombBlockedFlash - dt * 1.5);
     this.screenFlash = Math.max(0, this.screenFlash - dt * 4);
+    for (const gt of this.level.gates) gt.fade += ((gt.open ? 1 : 0) - gt.fade) * (1 - Math.exp(-4 * dt));
 
 
     for (const s of this.shards) {
@@ -784,6 +911,17 @@ export class Game {
     return { speed, safe: speed <= this.cfg.orbMaxImpact };
   }
 
+  /** y of the first solid surface straight below p (within maxDist), or null. */
+  groundBelow(p: Vec, maxDist = 1500): number | null {
+    const to = { x: p.x, y: p.y + maxDist };
+    let best: number | null = null;
+    for (const s of segmentsNear(this.level, p.x - 1, p.y, p.x + 1, to.y)) {
+      const t = segmentIntersectionT(p, to, s.a, s.b);
+      if (t !== null && (best === null || t < best)) best = t;
+    }
+    return best === null ? null : p.y + best * maxDist;
+  }
+
   /** Signed horizontal distance from the heli to the start pad centre (for the return-to-base hint). */
   padOffset(): number {
     const p = this.level.startPad;
@@ -797,6 +935,16 @@ export class Game {
   }
 }
 
-export function targetCentre(t: Target): Vec {
-  return { x: t.pos.x, y: t.pos.y - 8 };
+function wrapAngle(a: number): number {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
 }
+
+export function turretCentre(t: Turret): Vec {
+  return { x: t.pos.x + t.normal.x * 11, y: t.pos.y + t.normal.y * 11 };
+}
+
+export const TURRET_BARREL = 30;
+/** Extra slack for player shots: missiles are dumb-fire, so turrets are generous to hit. */
+export const TURRET_HIT_SLACK = 9;

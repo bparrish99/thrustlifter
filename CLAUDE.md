@@ -11,6 +11,7 @@ terms of how the game plays, not implementation.
 - `npm test`: vitest (physics + game-rule tests)
 - `npm run typecheck`
 - `npm run shots`: headless screenshots of staged moments into `shots/` (gitignored). Use it to check visuals.
+- `node scripts/shot-caverns.mjs`: overview and in-cave screenshots of Level 2
 
 ## Layout
 - `src/config.ts`: every feel tunable (also editable live in-game with **T**, persisted to localStorage)
@@ -18,6 +19,7 @@ terms of how the game plays, not implementation.
 - `src/game.ts`: game state and rules: collision, landing, pickup, delivery, weapons, particles. Fixed 240 Hz substeps.
 - `src/render.ts`: all drawing (faux-vector glow). No game logic.
 - `src/input.ts`: keyboard + gamepad → `FrameInput`
-- `src/levels/*.json`: level data (polygons, pads, orb, bowl, targets)
+- `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates); play order in `src/levels/index.ts`. Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
+- `src/audio.ts`: procedural rotor sound and event sound effects (game pushes `GameEvent`s; `main.ts` drains them each frame)
 
 Conventions: y points down; tilt > 0 = rotor tilted right; `window.game` is exposed for console poking and the screenshot script.

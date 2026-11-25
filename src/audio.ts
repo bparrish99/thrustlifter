@@ -1,5 +1,6 @@
 import { config } from './config';
-import type { Game } from './game';
+import type { Game, GameEvent } from './game';
+import type { Vec } from './math';
 
 /*
  * Procedural helicopter sound (Web Audio, no sample files).
@@ -30,6 +31,16 @@ export class Sound {
   private whineGain!: GainNode;
   private rumbleGain!: GainNode;
   private rumbleFilter!: BiquadFilterNode;
+  private beamGain!: GainNode;
+  private beamOsc!: OscillatorNode;
+  private beamOsc2!: OscillatorNode;
+  private beamAir!: BiquadFilterNode;
+  private beamTime = 0; // seconds the beam has been on (drives the rising pitch)
+  private lastT = 0;
+  private sfx!: GainNode; // effects volume (end of chain)
+  private sfxIn!: GainNode; // effects voices connect here
+  private noise!: AudioBuffer;
+  private brown!: AudioBuffer;
   muted = false;
 
   constructor(target: Window) {
@@ -51,6 +62,70 @@ export class Sound {
     if (!AC) return;
     const ctx = new AC();
     this.ctx = ctx;
+
+    // one-shot effects get their own bus: they must keep playing while the rotor bus is
+    // silenced (e.g. your own crash explosion)
+    //   voices -> sfxIn -> dry ------------------┐
+    //                   -> reverb send -> convolver -> wet ┴-> compressor -> tone -> sfx (volume) -> out
+    // The reverb gives every effect space and a tail; the compressor adds weight and stops clipping.
+    this.noise = noiseBuffer(ctx, 2);
+    this.brown = brownNoiseBuffer(ctx, 3);
+    this.sfxIn = ctx.createGain();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.knee.value = 12;
+    comp.ratio.value = 4;
+    comp.attack.value = 0.004;
+    comp.release.value = 0.25;
+    const verb = ctx.createConvolver();
+    verb.buffer = reverbImpulse(ctx, 3.2);
+    const send = ctx.createGain();
+    send.gain.value = 0.35;
+    const wet = ctx.createGain();
+    wet.gain.value = 0.4;
+    this.sfxIn.connect(comp);
+    this.sfxIn.connect(send).connect(verb).connect(wet).connect(comp);
+    const sfxTone = ctx.createBiquadFilter();
+    sfxTone.type = 'lowpass';
+    sfxTone.frequency.value = 5000; // keep the treble soft
+    this.sfx = ctx.createGain();
+    this.sfx.gain.value = config.volume * config.sfxVolume;
+    comp.connect(sfxTone).connect(this.sfx).connect(ctx.destination);
+
+    // tether beam: a rising "sucking" hum (fundamental + soft octave) plus a breathy
+    // band of noise that rises with it; pitch swoops up the longer the beam pulls
+    this.beamOsc = ctx.createOscillator();
+    this.beamOsc.type = 'sine';
+    this.beamOsc.frequency.value = 110;
+    this.beamOsc2 = ctx.createOscillator();
+    this.beamOsc2.type = 'sine';
+    this.beamOsc2.frequency.value = 220;
+    const octave = ctx.createGain();
+    octave.gain.value = 0.3;
+    const humMix = ctx.createGain();
+    humMix.gain.value = 0.8;
+    const pulse = ctx.createOscillator();
+    pulse.frequency.value = 3;
+    const pulseDepth = ctx.createGain();
+    pulseDepth.gain.value = 0.05;
+    pulse.connect(pulseDepth).connect(humMix.gain);
+    this.beamOsc.connect(humMix);
+    this.beamOsc2.connect(octave).connect(humMix);
+    this.beamGain = ctx.createGain();
+    this.beamGain.gain.value = 0;
+    humMix.connect(this.beamGain).connect(this.sfxIn);
+    const air = ctx.createBufferSource();
+    air.buffer = this.noise;
+    air.loop = true;
+    this.beamAir = ctx.createBiquadFilter();
+    this.beamAir.type = 'bandpass';
+    this.beamAir.frequency.value = 300;
+    this.beamAir.Q.value = 4;
+    const airLevel = ctx.createGain();
+    airLevel.gain.value = 0.35;
+    air.connect(this.beamAir).connect(airLevel).connect(this.beamGain);
+    air.start();
+    for (const o of [this.beamOsc, this.beamOsc2, pulse]) o.start();
 
     this.master = ctx.createGain();
     this.master.gain.value = 0;
@@ -132,6 +207,157 @@ export class Sound {
     this.whine.start();
   }
 
+  /** One-shot effects for game events. Distant events (from the listener) play quieter. */
+  play(e: GameEvent, listener?: Vec): void {
+    const ctx = this.ctx;
+    if (!ctx || this.muted) return;
+    let v = 1;
+    if (e.pos && listener) v = Math.max(0.15, Math.min(1, 1 - Math.hypot(e.pos.x - listener.x, e.pos.y - listener.y) / 1600));
+    const t = ctx.currentTime + 0.005;
+    switch (e.type) {
+      case 'missile': // ignition thump, then a roaring burn that trails off
+        this.tone(t, { type: 'sine', f0: 150, f1: 55, dur: 0.25, gain: 0.55 * v });
+        this.noiseHit(t, { dur: 1.0, type: 'bandpass', f0: 700, f1: 1300, q: 0.9, gain: 0.55 * v, attack: 0.04 });
+        this.noiseHit(t, { dur: 1.1, type: 'lowpass', f0: 700, f1: 250, gain: 0.7 * v, attack: 0.03, brown: true });
+        break;
+      case 'bomb': // bay clunk with a metallic ring
+        this.tone(t, { type: 'triangle', f0: 260, f1: 110, dur: 0.25, gain: 0.5 * v });
+        this.ring(t, 1150, 0.5, 0.3 * v);
+        this.noiseHit(t, { dur: 0.2, type: 'lowpass', f0: 500, f1: 150, gain: 0.4 * v, brown: true });
+        break;
+      case 'enemyShot': // deep "thoom" rather than a pew
+        this.tone(t, { type: 'sine', f0: 230, f1: 85, dur: 0.45, gain: 0.45 * v });
+        this.tone(t, { type: 'square', f0: 460, f1: 180, dur: 0.3, gain: 0.07 * v, lowpass: 1100 });
+        this.noiseHit(t, { dur: 0.4, type: 'bandpass', f0: 650, f1: 280, q: 1.2, gain: 0.35 * v });
+        break;
+      case 'impact': // missile hits rock
+        this.boom(t, 0.35, v);
+        break;
+      case 'bigImpact': // bomb
+        this.boom(t, 0.8, v);
+        break;
+      case 'turretDown':
+        this.boom(t, 0.9, v);
+        this.debris(t + 0.08, 5, v);
+        break;
+      case 'heliDown':
+        this.boom(t, 1.3, 1);
+        this.boom(t + 0.16, 0.6, 0.8);
+        this.debris(t + 0.1, 8, 1);
+        break;
+      case 'orbLost': // glassy shatter that rings out, over a muffled burst
+        for (const [f, d] of [[990, 1.6], [1320, 1.3], [1780, 1.1], [2470, 0.9], [3110, 0.7]] as const) {
+          this.tone(t, { type: 'sine', f0: f, f1: f * 0.985, dur: d, gain: 0.07 * v, attack: 0.002 });
+          this.tone(t + 0.01, { type: 'sine', f0: f * 1.004, f1: f * 0.99, dur: d * 0.9, gain: 0.05 * v, attack: 0.002 });
+        }
+        this.noiseHit(t, { dur: 0.6, type: 'highpass', f0: 2500, f1: 3500, gain: 0.15 * v });
+        this.boom(t, 0.45, v);
+        break;
+      case 'tether': // "...up!" chirp to finish the beam's swoop, then a magnetic lock: thump, clank, hum
+        this.tone(t, { type: 'sine', f0: 480, f1: 1100, dur: 0.14, gain: 0.3, attack: 0.01 });
+        this.tone(t, { type: 'sine', f0: 120, f1: 65, dur: 0.3, gain: 0.6 });
+        this.ring(t, 720, 0.6, 0.35);
+        this.tone(t, { type: 'sawtooth', f0: 80, f1: 160, dur: 0.4, gain: 0.12, attack: 0.05, lowpass: 500 });
+        break;
+      case 'release':
+        this.tone(t, { type: 'sine', f0: 110, f1: 55, dur: 0.3, gain: 0.55 });
+        this.ring(t, 520, 0.5, 0.3);
+        break;
+      case 'delivered': // bright chime that rings out
+        [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+          this.tone(t + i * 0.1, { type: 'sine', f0: f, f1: f, dur: 2.4, gain: 0.14, attack: 0.008 });
+          this.tone(t + i * 0.1, { type: 'sine', f0: f * 1.002, f1: f * 1.002, dur: 2.2, gain: 0.08, attack: 0.008 });
+        });
+        this.tone(t, { type: 'triangle', f0: 261.6, f1: 261.6, dur: 2.0, gain: 0.1, attack: 0.3, lowpass: 1500 });
+        break;
+      case 'complete': // fanfare over a warm chord
+        [392, 523.25, 659.25, 783.99, 659.25, 1046.5].forEach((f, i) =>
+          this.tone(t + i * 0.13, { type: 'triangle', f0: f, f1: f, dur: i === 5 ? 2.6 : 0.5, gain: 0.17, attack: 0.01, lowpass: 2800 }),
+        );
+        for (const f of [130.8, 196, 261.6, 329.6]) this.tone(t + 0.6, { type: 'sawtooth', f0: f, f1: f, dur: 2.8, gain: 0.05, attack: 0.4, lowpass: 900 });
+        break;
+      case 'gate': // heavy energy barrier powering up/down
+        this.tone(t, { type: 'sawtooth', f0: 55, f1: 110, dur: 1.8, gain: 0.3, attack: 0.15, lowpass: 700 });
+        this.tone(t, { type: 'sine', f0: 42, f1: 36, dur: 1.8, gain: 0.45, attack: 0.1 });
+        this.noiseHit(t, { dur: 1.8, type: 'lowpass', f0: 400, f1: 120, gain: 0.5, attack: 0.2, brown: true });
+        break;
+      case 'land':
+        this.tone(t, { type: 'sine', f0: 140, f1: 55, dur: 0.35, gain: 0.55 });
+        this.noiseHit(t, { dur: 0.3, type: 'lowpass', f0: 400, f1: 100, gain: 0.45, brown: true });
+        break;
+      case 'liftoff':
+        break;
+    }
+  }
+
+  private tone(
+    t: number,
+    o: { type: OscillatorType; f0: number; f1: number; dur: number; gain: number; attack?: number; lowpass?: number },
+  ): void {
+    const ctx = this.ctx!;
+    const osc = ctx.createOscillator();
+    osc.type = o.type;
+    osc.frequency.setValueAtTime(o.f0, t);
+    if (o.f1 !== o.f0) osc.frequency.exponentialRampToValueAtTime(Math.max(1, o.f1), t + o.dur);
+    const g = ctx.createGain();
+    envelope(g.gain, t, o.attack ?? 0.005, o.dur, o.gain);
+    let node: AudioNode = osc.connect(g);
+    if (o.lowpass) {
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = o.lowpass;
+      node = node.connect(f);
+    }
+    node.connect(this.sfxIn);
+    osc.start(t);
+    osc.stop(t + o.dur + 0.1);
+  }
+
+  private noiseHit(
+    t: number,
+    o: { dur: number; type: BiquadFilterType; f0: number; f1: number; q?: number; gain: number; attack?: number; brown?: boolean },
+  ): void {
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = o.brown ? this.brown : this.noise;
+    src.loop = true;
+    src.playbackRate.value = 0.85 + Math.random() * 0.3;
+    const f = ctx.createBiquadFilter();
+    f.type = o.type;
+    f.Q.value = o.q ?? 0.7;
+    f.frequency.setValueAtTime(o.f0, t);
+    f.frequency.exponentialRampToValueAtTime(Math.max(20, o.f1), t + o.dur);
+    const g = ctx.createGain();
+    envelope(g.gain, t, o.attack ?? 0.004, o.dur, o.gain);
+    src.connect(f).connect(g).connect(this.sfxIn);
+    src.start(t, Math.random() * 1.5);
+    src.stop(t + o.dur + 0.1);
+  }
+
+  /** A struck-metal ring: noise through a very narrow band-pass. */
+  private ring(t: number, freq: number, dur: number, gain: number): void {
+    this.noiseHit(t, { dur, type: 'bandpass', f0: freq, f1: freq * 0.97, q: 18, gain: gain * 4, attack: 0.002 });
+  }
+
+  /**
+   * Explosion, layered for weight: a short crack, a fiery body that darkens as it
+   * decays, a long brown-noise rumble tail and a sub-bass drop. `size` ~0.3 (small) to 1.3 (huge).
+   */
+  private boom(t: number, size: number, v: number): void {
+    this.noiseHit(t, { dur: 0.08, type: 'bandpass', f0: 2200, f1: 900, q: 0.8, gain: 0.45 * v * Math.min(1, size + 0.3) });
+    this.noiseHit(t, { dur: 0.4 + 1.0 * size, type: 'lowpass', f0: 600 + 2200 * Math.min(size, 1), f1: 140, gain: 0.85 * v, attack: 0.006 });
+    this.noiseHit(t, { dur: 0.7 + 1.6 * size, type: 'lowpass', f0: 450, f1: 55, gain: 0.8 * v * Math.min(1, size + 0.2), attack: 0.03, brown: true });
+    this.tone(t, { type: 'sine', f0: 95, f1: 30, dur: 0.5 + 0.6 * size, gain: 0.55 * v * Math.min(1, size + 0.1), attack: 0.004 });
+  }
+
+  /** Metal debris clattering down after a big explosion. */
+  private debris(t: number, n: number, v: number): void {
+    for (let i = 0; i < n; i++) {
+      const dt = 0.15 + Math.random() * 0.9;
+      this.ring(t + dt, 600 + Math.random() * 1400, 0.25 + Math.random() * 0.25, (0.08 + Math.random() * 0.08) * v);
+    }
+  }
+
   /** Call once per frame. */
   update(game: Game, paused: boolean): void {
     const ctx = this.ctx;
@@ -142,8 +368,23 @@ export class Sound {
     const smooth = 0.06;
 
     this.master.gain.setTargetAtTime(audible ? config.volume : 0, t, game.alive ? 0.08 : 0.02);
-    // blade-pass rate: a brisk soft idle chop, building to a fast chop at full throttle
-    this.chopLfo.frequency.setTargetAtTime(8 + spin * 7, t, smooth);
+    this.sfx.gain.setTargetAtTime(this.muted || paused ? 0 : config.volume * config.sfxVolume, t, 0.03);
+    // tether beam hum
+    const beamOn = game.beam && game.alive && !paused;
+    const dt = Math.min(0.1, Math.max(0, t - this.lastT));
+    this.lastT = t;
+    this.beamTime = beamOn ? this.beamTime + dt : 0;
+    // "boooeeee...": swoops from ~85 Hz up toward ~460 Hz over about 1.4 s, then keeps creeping up
+    const k = Math.min(1, this.beamTime / 1.4);
+    const bf = 85 * Math.pow(460 / 85, k * k * (3 - 2 * k)) + Math.max(0, this.beamTime - 1.4) * 40;
+    this.beamGain.gain.setTargetAtTime(beamOn ? 0.26 : 0, t, beamOn ? 0.05 : 0.07);
+    this.beamOsc.frequency.setTargetAtTime(bf, t, 0.03);
+    this.beamOsc2.frequency.setTargetAtTime(bf * 2, t, 0.03);
+    this.beamAir.frequency.setTargetAtTime(bf * 3, t, 0.03);
+    // blade-pass rate: a brisk soft idle chop on the pad; once airborne the beat never
+    // drops back to idle tempo (you can hear that you're flying), building to full at max throttle
+    const minRate = game.heli.landed ? 8 : 11.5;
+    this.chopLfo.frequency.setTargetAtTime(minRate + spin * (15 - minRate), t, game.heli.landed ? 0.35 : 0.25);
     // idle chop sits in an audible band (not just sub-bass) so it reads on any speakers
     this.chopDepth.gain.setTargetAtTime(0.4, t, smooth);
     this.rotorBus.gain.setTargetAtTime(0.7 + spin * 0.3, t, smooth);
@@ -154,6 +395,43 @@ export class Sound {
     this.whine.frequency.setTargetAtTime(340 + spin * 230, t, smooth);
     this.whineGain.gain.setTargetAtTime(0.008 + spin * 0.02, t, smooth);
   }
+}
+
+/** Attack to `peak`, then a natural exponential decay that reaches silence by `dur`. */
+function envelope(p: AudioParam, t: number, attack: number, dur: number, peak: number): void {
+  p.setValueAtTime(0.0001, t);
+  p.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + attack);
+  p.setTargetAtTime(0.0001, t + attack, Math.max(0.01, (dur - attack) / 4.5));
+}
+
+/** Brown (red) noise: deep, heavy rumble. */
+function brownNoiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
+  const len = Math.floor(ctx.sampleRate * seconds);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < len; i++) {
+    last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+    d[i] = last * 3.5;
+  }
+  return buf;
+}
+
+/** Synthetic hall reverb: stereo decaying noise, darkened over time. */
+function reverbImpulse(ctx: AudioContext, seconds: number): AudioBuffer {
+  const len = Math.floor(ctx.sampleRate * seconds);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const x = i / len;
+      const k = 0.5 - 0.42 * x; // later reflections are duller
+      lp += ((Math.random() * 2 - 1) - lp) * k;
+      d[i] = lp * Math.pow(1 - x, 2.4) * (i < ctx.sampleRate * 0.01 ? i / (ctx.sampleRate * 0.01) : 1);
+    }
+  }
+  return buf;
 }
 
 function noiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {

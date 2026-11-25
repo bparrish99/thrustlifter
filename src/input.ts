@@ -5,7 +5,7 @@ import type { FrameInput } from './game';
  *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z missile, X bomb, C flip
  *   WASD:   A/D tilt, W rotor, S dive   with  J missile, K bomb, L flip
  *   Space   hold = tether (pick up orb); press while carrying = release
- *   R restart · P/Esc pause · T tuning panel · H help · M mute
+ *   R restart · P/Esc pause · T tuning panel · H help · M mute · N next level (after completing) · 1-9 jump to level
  *
  * Gamepad (standard mapping):
  *   Left stick X tilt · RT (analog) or A rotor · LT (analog) or stick down dive · X/RB missile · B bomb · Y flip
@@ -19,6 +19,9 @@ export interface MetaInput {
   toggleTuning: boolean;
   toggleHelp: boolean;
   toggleMute: boolean;
+  nextLevel: boolean;
+  /** 0-based level index from number keys 1-9, or -1. */
+  jumpLevel: number;
 }
 
 export class Input {
@@ -59,6 +62,9 @@ export class Input {
     const toggleTuning = this.p('KeyT', 'Backquote');
     const toggleHelp = this.p('KeyH');
     const toggleMute = this.p('KeyM');
+    const nextLevel = this.p('KeyN');
+    let jumpLevel = -1;
+    for (let i = 1; i <= 9; i++) if (this.p(`Digit${i}`)) jumpLevel = i - 1;
 
     const pad = firstGamepad();
     if (pad) {
@@ -83,7 +89,7 @@ export class Input {
     tiltAxis = Math.max(-1, Math.min(1, tiltAxis));
     return {
       game: { tiltAxis, rotor, dive, fire, bomb, flip, pickup, pickupPressed, restart },
-      meta: { pause, toggleTuning, toggleHelp, toggleMute },
+      meta: { pause, toggleTuning, toggleHelp, toggleMute, nextLevel, jumpLevel },
     };
   }
 }

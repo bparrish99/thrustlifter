@@ -45,12 +45,22 @@ export const DEFAULTS = {
   bombDropSpeed: 115, // initial downward push out of the bay
   bombForwardSpeed: 45, // initial push toward the way you're facing
 
+  // Enemies: turrets
+  turretRange: 650,
+  turretInterval: 2.2, // seconds between shots (±20%)
+  turretCharge: 0.55, // telegraph glow before each shot
+  turretShotSpeed: 300,
+  turretLead: 0.5, // 0 = aims where you are, 1 = aims where you'll be
+  turretArcDeg: 80, // how far from straight-out they can aim
+
   // Camera / look
   viewHeight: 900, // world units visible vertically
   camLookahead: 0.35, // seconds of velocity lead
   camFollow: 4,
+  camGround: 0.78, // where the ground below you is framed on screen (0.5 = middle, 0.9 = near the bottom); heli stays between 15% and 60% from the top
   glow: 1,
   volume: 0.5,
+  sfxVolume: 0.45, // effects level relative to the rotor (multiplies volume)
 };
 
 export type Config = typeof DEFAULTS;

@@ -1,5 +1,5 @@
 import { config } from './config';
-import { COLORS, TARGET_RADIUS, targetCentre, type Game } from './game';
+import { COLORS, TURRET_BARREL, TURRET_RADIUS, turretCentre, type Game } from './game';
 import { clamp, lerp, toDeg, type Vec } from './math';
 import { ANCHOR, BODY, MAST, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
 
@@ -35,6 +35,7 @@ const C = {
   terrain: '#22e6ff',
   startPad: '#3dff8a',
   bowl: '#ffb020',
+  gate: '#ff3d8b',
   rotor: '#e8f6ff',
   rod: '#ffffff',
   hud: '#9fe8ff',
@@ -53,6 +54,7 @@ export class Renderer {
   private stars: { x: number; y: number; z: number; b: number }[] = [];
   private far: Vec[] = [];
   private terrainPaths: Path2D[] = [];
+  private terrainFor: unknown = null;
   private cam = { x: 0, y: 0, init: false };
   helpVisible = true;
   paused = false;
@@ -104,7 +106,11 @@ export class Renderer {
   render(game: Game, dt: number): void {
     this.clock += dt;
     const ctx = this.ctx;
-    if (this.terrainPaths.length === 0) this.buildTerrain(game);
+    if (this.terrainFor !== game.level) {
+      this.buildTerrain(game);
+      this.terrainFor = game.level;
+      this.cam.init = false;
+    }
     const scale = (this.h / config.viewHeight) * 1;
     this.updateCamera(game, dt, scale);
 
@@ -145,9 +151,11 @@ export class Renderer {
     ctx.scale(scale, scale);
     ctx.translate(-this.cam.x, -this.cam.y);
 
+    this.drawBackdrop(game);
     this.drawTerrain(game);
+    this.drawGates(game);
     this.drawBowl(game);
-    this.drawTargets(game);
+    this.drawTurrets(game);
     this.drawOrb(game);
     if (game.alive) this.drawHeli(game);
     this.drawProjectiles(game);
@@ -177,7 +185,13 @@ export class Renderer {
   private updateCamera(game: Game, dt: number, scale: number): void {
     const h = game.heli;
     let tx = h.pos.x + h.vel.x * config.camLookahead;
-    let ty = h.pos.y + h.vel.y * config.camLookahead - config.viewHeight * 0.1; // bias up: more sky, less rock
+    // Frame the ground under you: aim to put it at camGround (fraction down the screen),
+    // but never push the heli above 15% from the top or below 60% (sky when landed or low).
+    const vh = config.viewHeight;
+    const base = h.pos.y + h.vel.y * config.camLookahead;
+    const gy = game.groundBelow(h.pos);
+    let ty = gy === null ? base + vh * 0.2 : gy - vh * (config.camGround - 0.5);
+    ty = clamp(ty, base - vh * 0.1, base + vh * 0.35);
     if (game.orb.attached) {
       tx = lerp(tx, game.orb.pos.x, 0.3);
       ty = lerp(ty, game.orb.pos.y, 0.3);
@@ -197,7 +211,7 @@ export class Renderer {
     const halfW = this.w / 2 / scale;
     const W = game.level.data.width;
     this.cam.x = halfW * 2 >= W ? W / 2 : clamp(this.cam.x, halfW, W - halfW);
-    this.cam.y = Math.min(this.cam.y, 1400 - this.h / 2 / scale);
+    this.cam.y = Math.min(this.cam.y, game.level.maxY - this.h / 2 / scale);
   }
 
   // -------------------------------------------------------------- layers
@@ -227,9 +241,10 @@ export class Renderer {
 
   private drawTerrain(game: Game): void {
     const ctx = this.ctx;
-    const fill = ctx.createLinearGradient(0, 300, 0, 1300);
+    const deep = game.level.data.backdropY !== undefined;
+    const fill = ctx.createLinearGradient(0, 300, 0, deep ? game.level.maxY : 1300);
     fill.addColorStop(0, 'rgb(8,24,56)');
-    fill.addColorStop(1, 'rgb(3,4,16)');
+    fill.addColorStop(1, deep ? 'rgb(12,16,44)' : 'rgb(3,4,16)'); // underground rock stays visibly solid vs. the dark cave air
     ctx.globalCompositeOperation = 'source-over';
     for (const p of this.terrainPaths) {
       ctx.fillStyle = fill;
@@ -237,9 +252,11 @@ export class Renderer {
     }
     // faint contour lines inside the rock for depth
     ctx.save();
-    for (const p of this.terrainPaths) ctx.clip(p);
+    const all = new Path2D();
+    for (const p of this.terrainPaths) all.addPath(p);
+    ctx.clip(all);
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(34,230,255,0.06)';
+    ctx.strokeStyle = deep ? 'rgba(34,230,255,0.09)' : 'rgba(34,230,255,0.06)';
     ctx.lineWidth = 1;
     for (let y = -1200; y < 1400; y += 28) {
       ctx.beginPath();
@@ -248,7 +265,7 @@ export class Renderer {
       ctx.stroke();
     }
     ctx.restore();
-    const edge = ctx.createLinearGradient(0, 350, 0, 1000);
+    const edge = ctx.createLinearGradient(0, 350, 0, Math.max(1000, game.level.maxY - 300));
     edge.addColorStop(0, '#5afcff');
     edge.addColorStop(0.5, C.terrain);
     edge.addColorStop(1, '#7a5cff');
@@ -276,6 +293,68 @@ export class Renderer {
         ctx.fillStyle = lit ? col : 'rgba(255,255,255,0.15)';
         ctx.fillRect(x - 2, pad.y + 6, 4, 4);
       }
+    }
+  }
+
+  /** Underground, empty space shows dark rock instead of sky. */
+  private drawBackdrop(game: Game): void {
+    const y0 = game.level.data.backdropY;
+    if (y0 === undefined) return;
+    const ctx = this.ctx;
+    const W = game.level.data.width;
+    const g = ctx.createLinearGradient(0, y0, 0, y0 + 300);
+    g.addColorStop(0, 'rgba(3,2,8,0)');
+    g.addColorStop(1, 'rgba(3,2,8,1)');
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = g;
+    ctx.fillRect(-200, y0, W + 400, 300);
+    ctx.fillStyle = 'rgb(3,2,8)';
+    ctx.fillRect(-200, y0 + 300, W + 400, game.level.maxY);
+    // faint strata so the cave backdrop doesn't read as flat black
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(122,92,255,0.035)';
+    ctx.lineWidth = 2;
+    for (let y = y0 + 120; y < game.level.maxY; y += 46) {
+      ctx.beginPath();
+      for (let x = this.cam.x - 1400; x <= this.cam.x + 1400; x += 80) {
+        const yy = y + Math.sin(x * 0.004 + y) * 10;
+        x === this.cam.x - 1400 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawGates(game: Game): void {
+    const ctx = this.ctx;
+    for (const g of game.level.gates) {
+      const alpha = 1 - g.fade;
+      if (alpha < 0.02) continue;
+      const path = new Path2D();
+      g.pts.forEach((v, i) => (i ? path.lineTo(v.x, v.y) : path.moveTo(v.x, v.y)));
+      path.closePath();
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = alpha * (0.25 + 0.1 * Math.sin(this.clock * 9));
+      ctx.fillStyle = C.gate;
+      ctx.fill(path);
+      // crackling scan lines across the barrier
+      ctx.clip(path);
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      const xs = g.pts.map((p) => p.x);
+      const x0 = Math.min(...xs);
+      const x1 = Math.max(...xs);
+      for (let x = x0 + ((this.clock * 120) % 16); x < x1; x += 16) {
+        ctx.beginPath();
+        ctx.moveTo(x, Math.min(...g.pts.map((p) => p.y)));
+        ctx.lineTo(x + 8, Math.max(...g.pts.map((p) => p.y)));
+        ctx.stroke();
+      }
+      ctx.restore();
+      glow(ctx, path, C.gate, 1.6, alpha * config.glow);
     }
   }
 
@@ -326,24 +405,34 @@ export class Renderer {
     text(ctx, done ? 'DELIVERED' : 'ORB BOWL', bowl.cx, bowl.rimY - 86, 14, col, 'center', done ? 1 : 0.85);
   }
 
-  private drawTargets(game: Game): void {
+  private drawTurrets(game: Game): void {
     const ctx = this.ctx;
-    for (const t of game.targets) {
+    for (const t of game.turrets) {
       if (!t.alive) continue;
-      const { x, y } = t.pos;
+      const n = t.normal;
+      const tx = -n.y; // along the surface
+      const ty = n.x;
+      const base = Math.atan2(n.y, n.x);
+      const c = turretCentre(t);
       const p = new Path2D();
-      p.moveTo(x - 22, y);
-      p.lineTo(x + 22, y);
-      p.moveTo(x - TARGET_RADIUS, y);
-      p.arc(x, y, TARGET_RADIUS, Math.PI, 0);
-      const ang = -Math.PI / 2 + Math.sin(this.clock * 0.8 + x) * 0.9;
-      p.moveTo(x, y - 8);
-      p.lineTo(x + Math.cos(ang) * 26, y - 8 + Math.sin(ang) * 26);
-      glow(ctx, p, COLORS.target, 1.8, config.glow);
-      if (Math.sin(this.clock * 6 + x) > 0.3) {
-        const c = targetCentre(t);
-        dot(ctx, c.x, c.y, 3, COLORS.target);
+      p.moveTo(t.pos.x - tx * 34, t.pos.y - ty * 34);
+      p.lineTo(t.pos.x + tx * 34, t.pos.y + ty * 34);
+      // inner ring detail on the dome
+      p.moveTo(t.pos.x - tx * TURRET_RADIUS * 0.55, t.pos.y - ty * TURRET_RADIUS * 0.55);
+      p.arc(t.pos.x, t.pos.y, TURRET_RADIUS * 0.55, base + Math.PI / 2, base - Math.PI / 2, true);
+      p.moveTo(t.pos.x - tx * TURRET_RADIUS, t.pos.y - ty * TURRET_RADIUS);
+      p.arc(t.pos.x, t.pos.y, TURRET_RADIUS, base + Math.PI / 2, base - Math.PI / 2, true);
+      glow(ctx, p, COLORS.target, 2.2, config.glow);
+      // barrel, brighter as it charges
+      const barrel = new Path2D();
+      barrel.moveTo(c.x, c.y);
+      barrel.lineTo(c.x + Math.cos(t.aim) * TURRET_BARREL, c.y + Math.sin(t.aim) * TURRET_BARREL);
+      glow(ctx, barrel, t.charge > 0 ? '#ffb070' : COLORS.target, 3 + t.charge * 1.5, (1 + t.charge) * config.glow);
+      if (t.charge > 0) {
+        const m = { x: c.x + Math.cos(t.aim) * TURRET_BARREL, y: c.y + Math.sin(t.aim) * TURRET_BARREL };
+        dot(ctx, m.x, m.y, 1.5 + t.charge * 3.5, COLORS.enemyShot);
       }
+      if (t.tracking ? Math.sin(this.clock * 14) > 0 : Math.sin(this.clock * 4 + t.pos.x) > 0.3) dot(ctx, c.x, c.y, 3.5, COLORS.target);
     }
   }
 
@@ -421,7 +510,7 @@ export class Renderer {
     const ctx = this.ctx;
     const h = game.heli;
     const f = game.facingVis;
-    const spin = game.rotorSpin;
+    const spin = game.rotorSpeed;
     const glowK = config.glow;
     // engine buzz: a sub-unit shake that grows with the rotor (visual only)
     const buzz = 0.15 + spin * 0.35;
@@ -625,6 +714,13 @@ export class Renderer {
         path.moveTo(p.pos.x, p.pos.y);
         path.lineTo(p.pos.x - (p.vel.x / sp) * 14, p.pos.y - (p.vel.y / sp) * 14);
         glow(ctx, path, COLORS.missile, 2, config.glow);
+      } else if (p.kind === 'enemy') {
+        const sp = Math.hypot(p.vel.x, p.vel.y) || 1;
+        const tail = new Path2D();
+        tail.moveTo(p.pos.x, p.pos.y);
+        tail.lineTo(p.pos.x - (p.vel.x / sp) * 10, p.pos.y - (p.vel.y / sp) * 10);
+        glow(ctx, tail, COLORS.enemyShot, 2, 0.6 * config.glow);
+        dot(ctx, p.pos.x, p.pos.y, 3, COLORS.enemyShot);
       } else {
         const path = new Path2D();
         path.arc(p.pos.x, p.pos.y, 4.5, 0, Math.PI * 2);
@@ -667,10 +763,10 @@ export class Renderer {
     ctx.globalCompositeOperation = 'source-over';
 
     text(ctx, 'THRUSTLIFTER', 24, 34, 20, COLORS.heli, 'left');
-    text(ctx, `// ${game.level.data.name}`, 24, 56, 12, C.hud, 'left', 0.7);
+    text(ctx, `// LEVEL ${game.levelNumber} · ${game.level.data.name}`, 24, 56, 12, C.hud, 'left', 0.7);
 
-    const alive = game.targets.filter((t) => t.alive).length;
-    text(ctx, `TURRETS ${alive}/${game.targets.length}`, this.w - 24, 34, 14, COLORS.target, 'right');
+    const alive = game.turrets.filter((t) => t.alive).length;
+    text(ctx, `TURRETS ${alive}/${game.turrets.length}`, this.w - 24, 34, 14, COLORS.target, 'right');
     text(ctx, `DEATHS ${game.deaths}`, this.w - 24, 54, 12, C.hud, 'right', 0.8);
     text(ctx, `TIME ${(game.completedAt ?? game.time).toFixed(1)}`, this.w - 24, 72, 12, C.hud, 'right', 0.8);
 
@@ -748,15 +844,15 @@ export class Renderer {
       const fadeIn = clamp(m.t / 0.15, 0, 1);
       const fadeOut = clamp((m.life - m.t) / 0.4, 0, 1);
       const a = Math.min(fadeIn, fadeOut);
-      text(ctx, m.text, this.w / 2, this.h * 0.3, 42, m.color, 'center', a);
-      if (m.sub) text(ctx, m.sub, this.w / 2, this.h * 0.3 + 32, 14, C.hud, 'center', a * 0.85);
+      text(ctx, m.text, this.w / 2, this.h * 0.13, 42, m.color, 'center', a);
+      if (m.sub) text(ctx, m.sub, this.w / 2, this.h * 0.13 + 32, 14, C.hud, 'center', a * 0.85);
     }
 
     if (this.helpVisible) {
       const lines = [
         '←/→ or A/D  tilt     ↑ or W  rotor     ↓ or S  dive     C or L  flip facing',
         'Z or J  missile      X or K  bomb      SPACE  hold: tether · tap: release',
-        'R restart · P pause · M mute · T tuning panel · H hide this',
+        'R restart · P pause · M mute · 1-9 level · T tuning panel · H hide this',
       ];
       lines.forEach((l, i) => text(ctx, l, this.w / 2, this.h - 70 + i * 17, 12, C.hud, 'center', 0.55));
     }

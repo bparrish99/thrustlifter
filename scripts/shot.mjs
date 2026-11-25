@@ -109,6 +109,27 @@ await page.waitForTimeout(700);
 await page.screenshot({ path: 'shots/7-debris.png' });
 await page.evaluate(() => { window.game.cfg.viewHeight = 900; });
 
+// Turret charging up and firing at the heli (heli pinned in place for the shot).
+await page.keyboard.press('KeyR');
+await page.evaluate(() => {
+  const g = window.game;
+  g.cfg.viewHeight = 560;
+  g.heli.landed = false;
+  g.turrets[0].cooldown = 0.9;
+  const pin = setInterval(() => {
+    g.heli.pos = { x: 1090, y: 470 };
+    g.heli.vel = { x: 0, y: 0 };
+    g.heli.throttle = 0.4;
+  }, 5);
+  setTimeout(() => clearInterval(pin), 1400);
+});
+await page.waitForTimeout(650);
+await page.screenshot({ path: 'shots/8-turret-charge.png' });
+await page.waitForTimeout(450);
+await page.screenshot({ path: 'shots/9-turret-shot.png' });
+await page.waitForTimeout(400);
+await page.evaluate(() => { window.game.cfg.viewHeight = 900; });
+
 console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no page errors');
 await browser.close();
 await server.close();

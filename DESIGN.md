@@ -28,7 +28,10 @@ no matter how hard a level gets.** Every system gets judged against that.
 | Out of scope | No reactor, no inverse gravity. Probably no tractor beam. |
 | Leave room for | Fuel, shields (HUD space is reserved; pads could refuel). |
 | Gravity | Gentle, Thrust-like. Playtest-tuned defaults: gravity 165, thrust 450, max horizontal speed 250, dive 115. The first defaults (320/850) were far too violent. With the orb, full thrust holds altitude up to ~44° of tilt, so max tilt (45°) is right at the edge. |
-| Sound | Procedural (Web Audio, no samples). Rotor chop tempo follows the rotor: a brisk, soft but clearly audible idle chop (~8/s) building to a harder chop (~15/s) at full throttle, over a steady drone with a light low rumble and faint turbine whine. Treble kept soft (it read as a machine gun when bright). The idle chop must sit in an audible band, not just sub-bass. M mutes; volume in the tuning panel. |
+| Turrets | Big enough to hit with dumb-fire missiles (generous hit area). They track you, **telegraph each shot with a visible charge-up glow**, then fire a slow, dodgeable shot. They need line of sight, range and a firing arc around the way they face, so they can sit on floors, ceilings or walls. A hit kills you or destroys the orb. Range, interval, charge time, shot speed, aim lead and arc are tunable ("Enemies" folder). Combat stays secondary to flying. **Placement rule: only put turrets where the player can dodge and shoot back.** You can't fire upward (missiles stay within ±45° of horizontal, and bombs only drop), and there are no shields yet, so no turrets above you in vertical shafts or in spots you're forced through. |
+| Gates | Energy barriers in level data: `closes: pickup` seals the way in when you grab the orb; `opens: delivery` opens a way out when it's delivered. They reset if you die before delivering. This is how levels force a separate return path. |
+| Levels | Played in order (`src/levels/index.ts`). N goes to the next level after completing one; 1-9 jump to any level. Level 1 Proving Ground (surface); Level 2 Deep Caverns: the orb sits right at the bottom of the first shaft, then a long winding carry (passage, drop shaft, lower tunnel, climb, big chamber) to the bowl with **no enemies on the carry**; turrets guard only the way in and the way home (sealing gate on pickup, exit gate up a separate shaft on delivery). **Level-design rule: the orb comes early, and the orb-to-bowl stretch is the main challenge.** Cave levels set `backdropY` so open cave reads dark against solid rock. |
+| Sound | Procedural (Web Audio, no samples). Rotor chop tempo follows the rotor: a brisk, soft but clearly audible idle chop (~8/s) building to a harder chop (~15/s) at full throttle, over a steady drone with a light low rumble and faint turbine whine. Treble kept soft (it read as a machine gun when bright). The idle chop must sit in an audible band, not just sub-bass. M mutes; volume in the tuning panel. Event effects are synthesized too, and must have **weight, depth and sustain** (thin, short "bubble-wrap pops" were rejected). They're layered: explosions = crack + darkening fiery body + long brown-noise rumble + sub-bass drop; metal rings for clunks and debris; a rising "sucking" hum (boooeeee...) swoops up while the tether beam pulls, ending in an "...up!" chirp at lock-on (phaser tones were tried and rejected). All effects go through a hall reverb and a compressor and ring out for 1–3.5s. Distant events play quieter. |
 | Look | Colourful faux-vector 80s arcade with modern glitz: additive glow lines, bloom, particles, scanlines, vignette. |
 
 ## Core loop
@@ -40,8 +43,8 @@ Level-design hook: the return trip doesn't have to retrace the outbound route. L
 ## Milestones
 
 - **M0, lug test** (current): one surface level, heli, orb, rod, orb bowl, inert turrets, missiles/bombs, live tuning panel. *Goal: is carrying the orb fun?*
-- **M1, combat basics**: turrets that shoot, flying enemies, damage rules, fuel/shields decision.
-- **M2, caverns**: underground levels, camera for tight spaces, level sequencing, a level editor.
+- **M1, combat basics**: turrets that shoot ✅, flying enemies, fuel/shields decision.
+- **M2, caverns**: underground levels ✅ (Deep Caverns), level sequencing ✅, gates ✅, a level editor.
 - **M3, glitz pass**: WebGL bloom, audio, screen effects, menus.
 
 ## Open questions
