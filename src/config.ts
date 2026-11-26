@@ -34,16 +34,16 @@ export const DEFAULTS = {
   // Fuel & shield. Thrust (and dive) and the shield burn fuel. Refuel by hovering over fuel
   // tanks holding Space; each survivor picked up adds a little. No refuel on death.
   fuelMax: 100,
-  fuelBurn: 1.6, // per second at full throttle (dive burns the same)
-  shieldBurn: 9, // per second while the shield is up
+  fuelBurn: 3.1, // per second at full throttle (dive burns the same)
+  shieldBurn: 16, // per second while the shield is up
   tankRate: 30, // fuel sucked per second from a tank
-  tankAmount: 35, // fuel in a tank (levels can override per tank)
+  tankAmount: 45, // fuel in a tank (levels can override per tank)
   tankReach: 170, // how far above a tank you can hover and still suck from it
   rescueFuelBoost: 10, // fuel added for each survivor who climbs aboard
   fuelRespawnMin: 12, // safety net: if you respawn with less than this, you get topped up to it
 
   // Landing (skids on a pad only)
-  landMaxSpeed: 95,
+  landMaxSpeed: 120,
   landMaxTiltDeg: 10,
 
   // Weapons
@@ -54,12 +54,30 @@ export const DEFAULTS = {
   missileLife: 1.6,
 
   // Enemies: turrets
-  turretRange: 650,
-  turretInterval: 2.2, // seconds between shots (±20%)
-  turretCharge: 0.55, // telegraph glow before each shot
+  turretRange: 800,
+  turretInterval: 1.4, // seconds between shots (±20%)
+  turretCharge: 0.6, // telegraph glow before each shot
   turretShotSpeed: 300,
   turretLead: 0.5, // 0 = aims where you are, 1 = aims where you'll be
   turretArcDeg: 80, // how far from straight-out they can aim
+
+  // Enemies: guard helicopters (launch from rescue pads)
+  enemyHeliSpeed: 200,
+  enemyHeliAccel: 260,
+  enemyDetect: 1500, // how close you must come (with line of sight) before a guard launches
+  enemyStandoff: 300, // preferred distance to hover from you while attacking
+  enemyLeash: 1100, // won't stray further than this from its pad
+  enemyFireRange: 560,
+  enemyFireInterval: 0.9,
+  enemyCharge: 0.7, // telegraph glow before each shot
+  enemyRespawn: 3, // seconds before the next guard launches after one is downed
+  enemySpawnClear: 400, // the next guard won't appear on its pad while you're closer than this
+
+  // Enemies: balloons
+  balloonPatrol: 140, // how far a balloon drifts from its spot
+  balloonFireRange: 800,
+  balloonFireInterval: 1.4,
+  balloonCharge: 0.8,
 
   // Camera / look
   viewHeight: 890, // world units visible vertically

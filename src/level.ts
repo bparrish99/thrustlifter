@@ -6,6 +6,10 @@ export interface PadData {
   w: number;
   /** start = launch/return pad; rescue = where survivors wait. Each pad gives a one-time fuel boost. */
   kind: 'start' | 'rescue';
+  /** Enemy helicopters guarding this pad (launch one at a time when you come near). */
+  guards?: number;
+  /** Guards stay parked (asleep) until this happens, e.g. so none attack during the orb carry. */
+  guardsAfter?: 'delivery';
 }
 
 /** Plain-JSON level format (hand-authored now, editor-authored later). */
@@ -22,6 +26,8 @@ export interface LevelData {
   /** Energy barriers. `opens: 'delivery'` starts closed and opens when the orb is delivered;
    *  `closes: 'pickup'` starts open and seals when you first grab the orb. */
   gates?: { poly: number[]; opens?: 'delivery'; closes?: 'pickup' }[];
+  /** Enemy balloons: drift around (x,y) within `patrol` (default from config) and shoot at you. */
+  balloons?: { x: number; y: number; patrol?: number }[];
   /** Fuel tanks sitting on the ground at (x,y): hover over one and hold Space to suck it up. Shootable. */
   fuelTanks?: { x: number; y: number; amount?: number }[];
   /** Little people to rescue (optional bonus): feet at (x,y) on the ground, near a pad. */
@@ -29,7 +35,10 @@ export interface LevelData {
   /** Invisible respawn points (heli reappears hovering, held until you touch the controls).
    *  `after: 'delivery'` applies once the orb is delivered. If a level has none, the game
    *  uses a point above the bowl. */
-  checkpoints?: { x: number; y: number; after: 'delivery' }[];
+  checkpoints?: { x: number; y: number; after: 'delivery'; fuel?: number }[];
+  /** Minimum fuel when you respawn on the launch pad (before delivery). `checkpoints[].fuel` is the
+   *  same for each checkpoint. Size these so the next stretch is always possible: no soft-locks. */
+  startFuelMin?: number;
   /** Below this y, empty space shows a dark cave backdrop instead of sky. */
   backdropY?: number;
   /** Turrets sit at (x,y) on a surface. dir = direction they face in degrees (-90 = up, 90 = hanging from a ceiling). */

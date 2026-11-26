@@ -1,7 +1,7 @@
 import { config } from './config';
-import { COLORS, SHIELD_RADIUS, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, turretCentre, type Game } from './game';
-import { clamp, lerp, toDeg, type Vec } from './math';
-import { ANCHOR, BODY, MAST, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, SKID_Y, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
+import { BALLOON_R, COLORS, SHIELD_RADIUS, balloonGun, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, toWorldPoint, turretCentre, type Game } from './game';
+import { clamp, lerp, type Vec } from './math';
+import { ANCHOR, BODY, MAST, NOSE, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, SKID_Y, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
 
 const P = (x: number, y: number): Vec => ({ x, y });
 /** Decorative helicopter detail (local space, facing right). Collision shapes are in physics.ts. */
@@ -19,6 +19,18 @@ const HELI = {
   strobe: P(1, 10.5),
   nav: P(17, 7),
 };
+
+interface HeliPalette {
+  line: string;
+  canopy: string;
+  fillTop: string;
+  fillBottom: string;
+  tailFill: string;
+}
+const HELI_PLAYER: HeliPalette = { line: COLORS.heli, canopy: '#7ffcff', fillTop: 'rgba(60,44,8,0.95)', fillBottom: 'rgba(14,10,2,0.95)', tailFill: 'rgba(26,18,4,0.95)' };
+const HELI_ENEMY: HeliPalette = { line: '#ff3d6e', canopy: '#ffb0c8', fillTop: 'rgba(70,8,24,0.95)', fillBottom: 'rgba(16,2,6,0.95)', tailFill: 'rgba(30,4,10,0.95)' };
+
+const BALLOON_LINE = '#ff3d6e';
 
 const SUPPORTS_FILTER = typeof CanvasRenderingContext2D !== 'undefined' && 'filter' in CanvasRenderingContext2D.prototype;
 
@@ -57,12 +69,18 @@ export class Renderer {
   private stars: { x: number; y: number; z: number; b: number }[] = [];
   private far: Vec[] = [];
   private terrainPaths: Path2D[] = [];
+  private terrainAll: Path2D | null = null;
+  private rockPattern: CanvasPattern | null = null;
+  private nebula: HTMLCanvasElement | null = null;
   private terrainFor: unknown = null;
   private cam = { x: 0, y: 0, init: false };
   private groundY: number | null = null;
-  helpVisible = true;
   paused = false;
   private clock = 0;
+  private frameDt = 0;
+  private fuelNeedle = 1;
+  private scorePop = 0;
+  private lastScore = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext('2d');
@@ -109,6 +127,7 @@ export class Renderer {
 
   render(game: Game, dt: number): void {
     this.clock += dt;
+    this.frameDt = dt;
     const ctx = this.ctx;
     if (this.terrainFor !== game.level) {
       this.buildTerrain(game);
@@ -128,7 +147,7 @@ export class Renderer {
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, this.w, this.h);
     this.drawStars();
-    this.drawPlanet();
+    this.drawNebula();
 
     const shake = game.shake * game.shake * 14;
     const sx = (Math.random() - 0.5) * shake;
@@ -163,7 +182,15 @@ export class Renderer {
     this.drawTurrets(game);
     this.drawSurvivors(game);
     this.drawFuelTanks(game);
+    this.drawBalloons(game);
     this.drawOrb(game);
+    for (const e of game.enemies) {
+      this.drawHeliShape(e, HELI_ENEMY);
+      if (e.charge > 0) {
+        const m = toWorldPoint(e, NOSE);
+        dot(this.ctx, m.x, m.y, 1.5 + e.charge * 4, COLORS.enemyShot);
+      }
+    }
     if (game.alive) this.drawHeli(game);
     if (game.alive && game.shield) this.drawShield(game);
     this.drawProjectiles(game);
@@ -264,38 +291,40 @@ export class Renderer {
       p.closePath();
       return p;
     });
+    this.terrainAll = new Path2D();
+    for (const p of this.terrainPaths) this.terrainAll.addPath(p);
   }
 
   private drawTerrain(game: Game): void {
     const ctx = this.ctx;
     const deep = game.level.data.backdropY !== undefined;
-    const fill = ctx.createLinearGradient(0, 300, 0, deep ? game.level.maxY : 1300);
-    fill.addColorStop(0, 'rgb(8,24,56)');
-    fill.addColorStop(1, deep ? 'rgb(12,16,44)' : 'rgb(3,4,16)'); // underground rock stays visibly solid vs. the dark cave air
     ctx.globalCompositeOperation = 'source-over';
-    for (const p of this.terrainPaths) {
-      ctx.fillStyle = fill;
-      ctx.fill(p);
-    }
-    // faint contour lines inside the rock for depth
-    ctx.save();
-    const all = new Path2D();
-    for (const p of this.terrainPaths) all.addPath(p);
-    ctx.clip(all);
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = deep ? 'rgba(34,230,255,0.09)' : 'rgba(34,230,255,0.06)';
-    ctx.lineWidth = 1;
-    for (let y = -1200; y < 1400; y += 28) {
-      ctx.beginPath();
-      ctx.moveTo(this.cam.x - 2000, y);
-      ctx.lineTo(this.cam.x + 2000, y);
-      ctx.stroke();
-    }
-    ctx.restore();
+    // solid rock with body: a generated stone texture, darkening with depth
+    if (!this.rockPattern) this.rockPattern = ctx.createPattern(rockTexture(), 'repeat');
+    ctx.fillStyle = this.rockPattern ?? 'rgb(10,16,40)';
+    for (const p of this.terrainPaths) ctx.fill(p);
+    const depth = ctx.createLinearGradient(0, 350, 0, deep ? game.level.maxY : 1300);
+    depth.addColorStop(0, 'rgba(2,3,10,0)');
+    depth.addColorStop(1, deep ? 'rgba(2,3,10,0.35)' : 'rgba(2,3,10,0.75)'); // caves keep rock visible against the dark air
+    ctx.fillStyle = depth;
+    for (const p of this.terrainPaths) ctx.fill(p);
     const edge = ctx.createLinearGradient(0, 350, 0, Math.max(1000, game.level.maxY - 300));
     edge.addColorStop(0, '#5afcff');
     edge.addColorStop(0.5, C.terrain);
     edge.addColorStop(1, '#7a5cff');
+    // lit band just inside every surface
+    if (this.terrainAll) {
+      ctx.save();
+      ctx.clip(this.terrainAll);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = edge;
+      for (const [w, a] of [[36, 0.05], [16, 0.08]] as const) {
+        ctx.globalAlpha = a * config.glow;
+        ctx.lineWidth = w;
+        for (const p of this.terrainPaths) ctx.stroke(p);
+      }
+      ctx.restore();
+    }
     for (const p of this.terrainPaths) glow(ctx, p, edge, 2, config.glow);
 
     for (const { pad, pts } of game.level.padPolygons) {
@@ -433,6 +462,7 @@ export class Renderer {
     text(ctx, done ? 'DELIVERED' : 'ORB BOWL', bowl.cx, bowl.rimY - 86, 14, col, 'center', done ? 1 : 0.85);
   }
 
+  /** Gun emplacements: bolted armour base, faceted dome, twin barrels with a muzzle block, sensor slit. */
   private drawTurrets(game: Game): void {
     const ctx = this.ctx;
     for (const t of game.turrets) {
@@ -440,27 +470,109 @@ export class Renderer {
       const n = t.normal;
       const tx = -n.y; // along the surface
       const ty = n.x;
-      const base = Math.atan2(n.y, n.x);
-      const c = turretCentre(t);
-      const p = new Path2D();
-      p.moveTo(t.pos.x - tx * 34, t.pos.y - ty * 34);
-      p.lineTo(t.pos.x + tx * 34, t.pos.y + ty * 34);
-      // inner ring detail on the dome
-      p.moveTo(t.pos.x - tx * TURRET_RADIUS * 0.55, t.pos.y - ty * TURRET_RADIUS * 0.55);
-      p.arc(t.pos.x, t.pos.y, TURRET_RADIUS * 0.55, base + Math.PI / 2, base - Math.PI / 2, true);
-      p.moveTo(t.pos.x - tx * TURRET_RADIUS, t.pos.y - ty * TURRET_RADIUS);
-      p.arc(t.pos.x, t.pos.y, TURRET_RADIUS, base + Math.PI / 2, base - Math.PI / 2, true);
-      glow(ctx, p, COLORS.target, 2.2, config.glow);
-      // barrel, brighter as it charges
-      const barrel = new Path2D();
-      barrel.moveTo(c.x, c.y);
-      barrel.lineTo(c.x + Math.cos(t.aim) * TURRET_BARREL, c.y + Math.sin(t.aim) * TURRET_BARREL);
-      glow(ctx, barrel, t.charge > 0 ? '#ffb070' : COLORS.target, 3 + t.charge * 1.5, (1 + t.charge) * config.glow);
-      if (t.charge > 0) {
-        const m = { x: c.x + Math.cos(t.aim) * TURRET_BARREL, y: c.y + Math.sin(t.aim) * TURRET_BARREL };
-        dot(ctx, m.x, m.y, 1.5 + t.charge * 3.5, COLORS.enemyShot);
+      const L = (u: number, v: number): Vec => ({ x: t.pos.x + tx * u + n.x * v, y: t.pos.y + ty * u + n.y * v });
+      const poly = (pts: [number, number][]) => {
+        const path = new Path2D();
+        pts.forEach(([u, v], i) => {
+          const q = L(u, v);
+          i ? path.lineTo(q.x, q.y) : path.moveTo(q.x, q.y);
+        });
+        path.closePath();
+        return path;
+      };
+      const metal = (path: Path2D, light: number) => {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        const a = L(-20, 30);
+        const b = L(20, 0);
+        const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+        g.addColorStop(0, `rgba(${90 + light},${22 + light / 3},${34 + light / 3},0.98)`);
+        g.addColorStop(1, 'rgba(18,4,8,0.98)');
+        ctx.fillStyle = g;
+        ctx.fill(path);
+        ctx.restore();
+      };
+      // base plate
+      const base = poly([[-36, -2], [36, -2], [30, 7], [-30, 7]]);
+      metal(base, 0);
+      glow(ctx, base, COLORS.target, 1.4, 0.9 * config.glow);
+      // faceted dome
+      const R = TURRET_RADIUS;
+      const dome: [number, number][] = [];
+      for (let i = 0; i <= 6; i++) {
+        const a2 = Math.PI - (i / 6) * Math.PI;
+        dome.push([Math.cos(a2) * R, 7 + Math.sin(a2) * R * 0.9]);
       }
-      if (t.tracking ? Math.sin(this.clock * 14) > 0 : Math.sin(this.clock * 4 + t.pos.x) > 0.3) dot(ctx, c.x, c.y, 3.5, COLORS.target);
+      const domePath = poly(dome);
+      metal(domePath, 25);
+      // twin barrels with a muzzle block, drawn as solid shapes along the aim
+      const c = turretCentre(t);
+      const dx = Math.cos(t.aim);
+      const dy = Math.sin(t.aim);
+      const px = -dy;
+      const py = dx;
+      const bar = (off: number) => {
+        const path = new Path2D();
+        const pts = [
+          [6, off - 2],
+          [TURRET_BARREL - 6, off - 2],
+          [TURRET_BARREL - 6, off + 2],
+          [6, off + 2],
+        ];
+        pts.forEach(([a2, b2], i) => {
+          const q = { x: c.x + dx * a2 + px * b2, y: c.y + dy * a2 + py * b2 };
+          i ? path.lineTo(q.x, q.y) : path.moveTo(q.x, q.y);
+        });
+        path.closePath();
+        return path;
+      };
+      const muzzle = new Path2D();
+      [[TURRET_BARREL - 7, -5.5], [TURRET_BARREL + 1, -5.5], [TURRET_BARREL + 1, 5.5], [TURRET_BARREL - 7, 5.5]].forEach(([a2, b2], i) => {
+        const q = { x: c.x + dx * a2 + px * b2, y: c.y + dy * a2 + py * b2 };
+        i ? muzzle.lineTo(q.x, q.y) : muzzle.moveTo(q.x, q.y);
+      });
+      muzzle.closePath();
+      const barrels = new Path2D();
+      barrels.addPath(bar(-3.2));
+      barrels.addPath(bar(3.2));
+      barrels.addPath(muzzle);
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(40,8,14,0.98)';
+      ctx.fill(barrels);
+      ctx.restore();
+      glow(ctx, barrels, t.charge > 0 ? '#ffb070' : COLORS.target, 1.2, (0.9 + t.charge) * config.glow);
+      glow(ctx, domePath, COLORS.target, 1.8, config.glow);
+      // dome panel lines and bolts
+      const panel = new Path2D();
+      const p0 = L(-R * 0.62, 7);
+      const p1 = L(0, 7 + R * 0.9);
+      const p2 = L(R * 0.62, 7);
+      panel.moveTo(p0.x, p0.y);
+      panel.lineTo(p1.x, p1.y);
+      panel.lineTo(p2.x, p2.y);
+      glow(ctx, panel, '#ff9a3c', 0.7, 0.35 * config.glow);
+      for (const u of [-27, -14, 14, 27]) {
+        const q = L(u, 2.5);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = 'rgba(255,170,150,0.55)';
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, 1.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      // sensor slit (blinks fast while tracking you)
+      const sensor = L(0, 7 + R * 0.45);
+      const on = t.tracking ? Math.sin(this.clock * 14) > 0 : Math.sin(this.clock * 3 + t.pos.x) > 0.2;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = on ? 'rgba(255,90,70,0.95)' : 'rgba(255,90,70,0.25)';
+      ctx.beginPath();
+      ctx.ellipse(sensor.x, sensor.y, 7, 2.2, Math.atan2(ty, tx), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      if (t.charge > 0) dot(ctx, c.x + dx * (TURRET_BARREL + 2), c.y + dy * (TURRET_BARREL + 2), 1.5 + t.charge * 4, COLORS.enemyShot);
     }
   }
 
@@ -488,14 +600,7 @@ export class Renderer {
         rod.moveTo(a.x, a.y);
         rod.lineTo(pos.x, pos.y);
         glow(ctx, rod, C.rod, 1.6, 0.8 * config.glow);
-      } else if (game.orb.delivered && game.phase === 'playing' && game.alive) {
-      const off = game.padOffset();
-      const arrow = off < 0 ? '◀◀' : '▶▶';
-      const label = Math.abs(off) < 120 ? 'LAND ON YOUR PAD' : `RETURN TO PAD  ${Math.abs(off).toFixed(0)}`;
-      text(ctx, off < 0 ? `${arrow}  ${label}` : `${label}  ${arrow}`, this.w / 2, this.h - 110, 15, '#3dff8a', 'center', 0.75 + 0.25 * Math.sin(this.clock * 5));
-    } else if (game.orb.attached && game.orbApproach()) {
-      text(ctx, 'SPACE TO RELEASE', this.w / 2, this.h - 110, 13, COLORS.orb, 'center', 0.7);
-    } else if (game.beam) {
+      } else if (game.beam) {
         ctx.save();
         ctx.setLineDash([4, 6]);
         ctx.lineDashOffset = -this.clock * 60;
@@ -535,10 +640,15 @@ export class Renderer {
   }
 
   private drawHeli(game: Game): void {
-    const ctx = this.ctx;
     const h = game.heli;
-    const f = game.facingVis;
-    const spin = game.rotorSpeed;
+    this.drawHeliShape({ pos: h.pos, tilt: h.tilt, facing: game.facingVis, spin: game.rotorSpeed, rotorPhase: game.rotorPhase }, HELI_PLAYER);
+  }
+
+  /** Any helicopter (player or enemy) in a given colour scheme. */
+  private drawHeliShape(h: { pos: Vec; tilt: number; facing: number; spin: number; rotorPhase: number }, pal: HeliPalette): void {
+    const ctx = this.ctx;
+    const f = h.facing;
+    const spin = h.spin;
     const glowK = config.glow;
     // engine buzz: a sub-unit shake that grows with the rotor (visual only)
     const buzz = 0.15 + spin * 0.35;
@@ -564,21 +674,21 @@ export class Renderer {
     const boom = poly(HELI.boom);
     const fin = poly(HELI.fin);
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgba(26,18,4,0.95)';
+    ctx.fillStyle = pal.tailFill;
     ctx.fill(boom);
     ctx.fill(fin);
     const tail = new Path2D(boom);
     tail.addPath(fin);
     seg(tail, HELI.ventral[0], HELI.ventral[1]);
     seg(tail, HELI.stab[0], HELI.stab[1]);
-    glow(ctx, tail, COLORS.heli, 1.2, glowK);
+    glow(ctx, tail, pal.line, 1.2, glowK);
 
     // ---- tail rotor: seen face-on from the side, so it's a spinning disc
     const hub = W(TAIL_ROTOR_HUB);
     const tdisc = new Path2D();
     tdisc.arc(hub.x, hub.y, TAIL_ROTOR_R, 0, Math.PI * 2);
     glow(ctx, tdisc, C.rotor, 0.6, (0.08 + spin * 0.3) * glowK);
-    const tPhase = game.rotorPhase * 2.6 * Math.sign(f || 1);
+    const tPhase = h.rotorPhase * 2.6 * Math.sign(f || 1);
     const tGhosts = Math.round(spin * 5);
     for (let g = tGhosts; g >= 0; g--) {
       const a = tPhase - g * 0.22;
@@ -594,8 +704,8 @@ export class Renderer {
     const body = poly(BODY);
     const hump = poly(HELI.hump);
     const fill = ctx.createLinearGradient(pos.x, pos.y - 12, pos.x, pos.y + 12);
-    fill.addColorStop(0, 'rgba(60,44,8,0.95)');
-    fill.addColorStop(1, 'rgba(14,10,2,0.95)');
+    fill.addColorStop(0, pal.fillTop);
+    fill.addColorStop(1, pal.fillBottom);
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = fill;
     ctx.fill(hump);
@@ -603,14 +713,14 @@ export class Renderer {
     const hull = new Path2D(body);
     hull.addPath(hump);
     seg(hull, MAST[0], MAST[1]);
-    glow(ctx, hull, COLORS.heli, 1.5, glowK);
+    glow(ctx, hull, pal.line, 1.5, glowK);
 
     // panel lines + side window
     const detail = new Path2D();
     seg(detail, HELI.door[0], HELI.door[1]);
     seg(detail, HELI.exhaust[0], HELI.exhaust[1]);
     detail.addPath(poly(HELI.window));
-    glow(ctx, detail, COLORS.heli, 0.7, 0.45 * glowK);
+    glow(ctx, detail, pal.line, 0.7, 0.45 * glowK);
 
     // canopy glass with a lit cockpit
     const glass = poly(HELI.canopy);
@@ -621,14 +731,14 @@ export class Renderer {
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = gfill;
     ctx.fill(glass);
-    glow(ctx, glass, '#7ffcff', 1, 0.9 * glowK);
+    glow(ctx, glass, pal.canopy, 1, 0.9 * glowK);
 
     // ---- landing gear
     const gear = new Path2D();
     STRUTS.forEach(([a, b]) => seg(gear, a, b));
     seg(gear, SKID[0], SKID[1]);
     seg(gear, SKID_TOE[0], SKID_TOE[1]);
-    glow(ctx, gear, COLORS.heli, 1.2, glowK);
+    glow(ctx, gear, pal.line, 1.2, glowK);
 
     // ---- main rotor: blades sweep round an edge-on ellipse, with motion-blur ghosts
     const ry = 3.2;
@@ -644,7 +754,7 @@ export class Renderer {
     for (let g = ghosts; g >= 0; g--) {
       const path = new Path2D();
       for (let b = 0; b < 2; b++) {
-        const t = tip(game.rotorPhase + b * Math.PI - g * 0.14);
+        const t = tip(h.rotorPhase + b * Math.PI - g * 0.14);
         path.moveTo(rhub.x, rhub.y);
         path.lineTo(t.x, t.y);
       }
@@ -665,6 +775,205 @@ export class Renderer {
     dot(ctx, nav.x, nav.y, 1.1, '#3dff8a');
   }
 
+  /** Enemy balloons: an angular armoured gasbag with fins, a glowing red eye and a rigid gun pod. */
+  private drawBalloons(game: Game): void {
+    const ctx = this.ctx;
+    for (const b of game.balloons) {
+      const R = BALLOON_R;
+      const sway = Math.sin(b.t * 0.9) * 0.07;
+      const cs = Math.cos(sway);
+      const sn = Math.sin(sway);
+      const P = (x: number, y: number): Vec => ({ x: b.pos.x + (x * cs - y * sn) * R, y: b.pos.y + (x * sn + y * cs) * R });
+      const poly = (pts: [number, number][], close = true) => {
+        const path = new Path2D();
+        pts.forEach(([x, y], i) => {
+          const q = P(x, y);
+          i ? path.lineTo(q.x, q.y) : path.moveTo(q.x, q.y);
+        });
+        if (close) path.closePath();
+        return path;
+      };
+      const hull: [number, number][] = [
+        [0, -1.25], [0.75, -0.85], [1.0, -0.1], [0.7, 0.7], [0.2, 1.05], [-0.2, 1.05], [-0.7, 0.7], [-1.0, -0.1], [-0.75, -0.85],
+      ];
+      const body = poly(hull);
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      const g = ctx.createLinearGradient(b.pos.x - R, b.pos.y - R, b.pos.x + R, b.pos.y + R);
+      g.addColorStop(0, 'rgba(70,10,26,0.97)');
+      g.addColorStop(1, 'rgba(16,2,8,0.97)');
+      ctx.fillStyle = g;
+      ctx.fill(body);
+      ctx.restore();
+      // fins and top spike
+      const fins = new Path2D();
+      fins.addPath(poly([[1.0, -0.35], [1.42, -0.05], [1.0, 0.2]], false));
+      fins.addPath(poly([[-1.0, -0.35], [-1.42, -0.05], [-1.0, 0.2]], false));
+      fins.addPath(poly([[0, -1.25], [0, -1.65]], false));
+      fins.addPath(poly([[-0.12, -1.5], [0.12, -1.5]], false));
+      glow(ctx, body, BALLOON_LINE, 1.7, config.glow);
+      glow(ctx, fins, BALLOON_LINE, 1.5, config.glow);
+      // armour facets
+      const facets = new Path2D();
+      facets.addPath(poly([[-1.0, -0.1], [1.0, -0.1]], false));
+      facets.addPath(poly([[-0.75, -0.85], [-0.3, -0.1], [-0.2, 1.05]], false));
+      facets.addPath(poly([[0.75, -0.85], [0.3, -0.1], [0.2, 1.05]], false));
+      facets.addPath(poly([[0, -1.25], [-0.3, -0.1]], false));
+      facets.addPath(poly([[0, -1.25], [0.3, -0.1]], false));
+      glow(ctx, facets, '#ff9a3c', 0.8, 0.45 * config.glow);
+      // the eye: a red slit that glances toward you and flares when charging
+      const look = clamp(Math.cos(b.aim) * 0.25, -0.25, 0.25);
+      const eye = P(look, 0.25);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const flare = 0.55 + 0.25 * Math.sin(this.clock * 6 + b.t) + b.charge * 0.8;
+      const eg = ctx.createRadialGradient(eye.x, eye.y, 0, eye.x, eye.y, R * (0.55 + b.charge * 0.4));
+      eg.addColorStop(0, `rgba(255,80,60,${Math.min(1, flare)})`);
+      eg.addColorStop(1, 'rgba(255,0,40,0)');
+      ctx.fillStyle = eg;
+      ctx.beginPath();
+      ctx.arc(eye.x, eye.y, R * (0.55 + b.charge * 0.4), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(255,${180 + b.charge * 75},${160 + b.charge * 95},${Math.min(1, 0.7 + b.charge)})`;
+      ctx.beginPath();
+      ctx.ellipse(eye.x, eye.y, R * 0.26, R * 0.06 + b.charge * 2, sway, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // rigid strut down to a hex gun pod
+      const gun = balloonGun(b);
+      const strut = new Path2D();
+      const bottom = P(0, 1.05);
+      strut.moveTo(bottom.x, bottom.y);
+      strut.lineTo(gun.x, gun.y - 8);
+      for (let i = 0; i <= 6; i++) {
+        const a2 = (i / 6) * Math.PI * 2 + Math.PI / 6;
+        const q = { x: gun.x + Math.cos(a2) * 8, y: gun.y + Math.sin(a2) * 8 };
+        i ? strut.lineTo(q.x, q.y) : strut.moveTo(q.x, q.y);
+      }
+      glow(ctx, strut, BALLOON_LINE, 1.3, config.glow);
+      const barrel = new Path2D();
+      barrel.moveTo(gun.x, gun.y);
+      barrel.lineTo(gun.x + Math.cos(b.aim) * 20, gun.y + Math.sin(b.aim) * 20);
+      glow(ctx, barrel, b.charge > 0 ? '#ffb070' : BALLOON_LINE, 2.6, (1 + b.charge) * config.glow);
+      if (b.charge > 0) dot(ctx, gun.x + Math.cos(b.aim) * 20, gun.y + Math.sin(b.aim) * 20, 1.5 + b.charge * 3.5, COLORS.enemyShot);
+    }
+  }
+
+  /**
+   * LED bar fuel gauge: a recessed housing with a row of LED lenses. Lit LEDs have a hot core,
+   * a specular glint and a halo; unlit ones are dark lenses that still catch a reflection.
+   * Red at the low end, then amber, yellow, and green at the full end. Blinks when low; a light sweeps along it while refuelling.
+   */
+  private drawFuelGauge(game: Game): void {
+    const ctx = this.ctx;
+    const k = clamp(game.fuel / config.fuelMax, 0, 1);
+    this.fuelNeedle += (k - this.fuelNeedle) * (1 - Math.exp(-6 * this.frameDt));
+    const low = k < 0.2;
+    const blinkOn = Math.sin(this.clock * 9) > -0.1;
+    const segs = 24;
+    const ledW = 16;
+    const ledH = 24;
+    const gap = 5;
+    const innerW = segs * ledW + (segs - 1) * gap;
+    const pad = 12;
+    const w = innerW + pad * 2;
+    const h = ledH + pad * 2;
+    const x0 = this.w / 2 - w / 2;
+    const y0 = this.h - h - 22;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    // housing: dark recessed panel with a thin bevelled frame
+    const body = ctx.createLinearGradient(0, y0, 0, y0 + h);
+    body.addColorStop(0, '#20232c');
+    body.addColorStop(0.5, '#0b0c11');
+    body.addColorStop(1, '#16181f');
+    ctx.fillStyle = body;
+    roundRect(ctx, x0, y0, w, h, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 1;
+    roundRect(ctx, x0 + 0.5, y0 + 0.5, w - 1, h - 1, 8);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    roundRect(ctx, x0 + pad - 4, y0 + pad - 4, innerW + 8, ledH + 8, 4);
+    ctx.fill();
+    ctx.restore();
+
+    const lit = this.fuelNeedle * segs;
+    const sweep = game.refueling ? ((this.clock * 1.6) % 1.4) * segs : -99;
+    for (let i = 0; i < segs; i++) {
+      const lx = x0 + pad + i * (ledW + gap);
+      const ly = y0 + pad;
+      const v = i / (segs - 1);
+      const [cr, cg, cb] = v < 0.2 ? [255, 60, 50] : v < 0.45 ? [255, 160, 40] : v < 0.75 ? [255, 225, 70] : [80, 255, 120];
+      let on = clamp(lit - i, 0, 1);
+      if (low && !blinkOn) on *= 0.25;
+      const sw = Math.max(0, 1 - Math.abs(sweep - i) / 2.5) * 0.6;
+      const glowK = on > 0 ? on : sw * 0.5;
+      ctx.save();
+      // lens base
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgb(${Math.round(cr * 0.12)},${Math.round(cg * 0.1)},${Math.round(cb * 0.1)})`;
+      roundRect(ctx, lx, ly, ledW, ledH, 3);
+      ctx.fill();
+      if (glowK > 0) {
+        ctx.globalCompositeOperation = 'lighter';
+        // halo bleeding past the lens
+        const halo = ctx.createRadialGradient(lx + ledW / 2, ly + ledH / 2, 2, lx + ledW / 2, ly + ledH / 2, ledH * 1.1);
+        halo.addColorStop(0, `rgba(${cr},${cg},${cb},${0.35 * glowK})`);
+        halo.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+        ctx.fillStyle = halo;
+        ctx.fillRect(lx - ledH, ly - ledH * 0.6, ledW + ledH * 2, ledH * 2.2);
+        // the lit lens: hot core fading to the edges
+        const core = ctx.createRadialGradient(lx + ledW / 2, ly + ledH * 0.45, 1, lx + ledW / 2, ly + ledH / 2, ledH * 0.7);
+        core.addColorStop(0, `rgba(255,${Math.min(255, cg + 80)},${Math.min(255, cb + 120)},${glowK})`);
+        core.addColorStop(0.45, `rgba(${cr},${cg},${cb},${0.95 * glowK})`);
+        core.addColorStop(1, `rgba(${Math.round(cr * 0.5)},${Math.round(cg * 0.4)},${Math.round(cb * 0.3)},${0.8 * glowK})`);
+        ctx.fillStyle = core;
+        roundRect(ctx, lx, ly, ledW, ledH, 3);
+        ctx.fill();
+      }
+      // specular glint on the lens (always there; brighter when lit)
+      ctx.globalCompositeOperation = 'lighter';
+      const spec = ctx.createLinearGradient(lx, ly, lx, ly + ledH * 0.5);
+      spec.addColorStop(0, `rgba(255,255,255,${0.12 + 0.35 * glowK})`);
+      spec.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = spec;
+      roundRect(ctx, lx + 2, ly + 1.5, ledW - 4, ledH * 0.42, 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(255,255,255,${0.25 + 0.5 * glowK})`;
+      ctx.beginPath();
+      ctx.ellipse(lx + ledW * 0.32, ly + ledH * 0.2, 1.6, 2.6, -0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    text(ctx, 'E', x0 - 14, y0 + h / 2, 13, '#ff6a6a', 'center', 0.8);
+    text(ctx, 'F', x0 + w + 14, y0 + h / 2, 13, C.fuelPad, 'center', 0.8);
+  }
+
+  /** A tiny helicopter silhouette for the lives display. */
+  private drawLifeIcon(x: number, y: number, size = 0.5): void {
+    const P = (px: number, py: number) => ({ x: x + px * size, y: y + py * size });
+    const p = new Path2D();
+    BODY.forEach((v, i) => {
+      const q = P(v.x, v.y);
+      i ? p.lineTo(q.x, q.y) : p.moveTo(q.x, q.y);
+    });
+    p.closePath();
+    const seg = (a: Vec, b: Vec) => {
+      const A = P(a.x, a.y);
+      const B = P(b.x, b.y);
+      p.moveTo(A.x, A.y);
+      p.lineTo(B.x, B.y);
+    };
+    seg({ x: -15, y: 0 }, { x: -44, y: -3 });
+    seg({ x: -44, y: -3 }, { x: -48, y: -12 });
+    seg({ x: -ROTOR_R, y: ROTOR_Y }, { x: ROTOR_R, y: ROTOR_Y });
+    seg(SKID[0], SKID[1]);
+    glow(this.ctx, p, COLORS.heli, 1.1, 0.9 * config.glow);
+  }
+
   /** Fuel tanks: a squat canister with a fill gauge; a beam while you're sucking one dry. */
   private drawFuelTanks(game: Game): void {
     const ctx = this.ctx;
@@ -674,10 +983,10 @@ export class Renderer {
       const y0 = t.pos.y - TANK_H;
       const body = new Path2D();
       body.moveTo(x0, t.pos.y);
-      body.lineTo(x0, y0 + 5);
-      body.quadraticCurveTo(x0, y0, x0 + 5, y0);
-      body.lineTo(x0 + TANK_W - 5, y0);
-      body.quadraticCurveTo(x0 + TANK_W, y0, x0 + TANK_W, y0 + 5);
+      body.lineTo(x0, y0 + 8);
+      body.quadraticCurveTo(x0, y0, x0 + 8, y0);
+      body.lineTo(x0 + TANK_W - 8, y0);
+      body.quadraticCurveTo(x0 + TANK_W, y0, x0 + TANK_W, y0 + 8);
       body.lineTo(x0 + TANK_W, t.pos.y);
       body.closePath();
       ctx.globalCompositeOperation = 'source-over';
@@ -692,12 +1001,15 @@ export class Renderer {
       ctx.fillRect(x0 + 4, t.pos.y - 3 - fh, TANK_W - 8, fh);
       ctx.restore();
       const trim = new Path2D(body);
-      trim.moveTo(x0 + TANK_W / 2 - 4, y0);
-      trim.lineTo(x0 + TANK_W / 2 - 4, y0 - 4); // cap
-      trim.lineTo(x0 + TANK_W / 2 + 4, y0 - 4);
-      trim.lineTo(x0 + TANK_W / 2 + 4, y0);
+      trim.moveTo(x0 + TANK_W / 2 - 6, y0);
+      trim.lineTo(x0 + TANK_W / 2 - 6, y0 - 6); // cap
+      trim.lineTo(x0 + TANK_W / 2 + 6, y0 - 6);
+      trim.lineTo(x0 + TANK_W / 2 + 6, y0);
+      // hazard bands
+      trim.moveTo(x0, t.pos.y - 7);
+      trim.lineTo(x0 + TANK_W, t.pos.y - 7);
       glow(ctx, trim, C.fuelPad, 1.5, config.glow);
-      text(ctx, 'F', t.pos.x, t.pos.y - TANK_H / 2, 10, C.fuelPad, 'center', 0.6);
+      text(ctx, 'FUEL', t.pos.x, t.pos.y - TANK_H / 2, 11, C.fuelPad, 'center', 0.65);
     }
     if (game.fueling && game.alive) {
       const t = game.fueling;
@@ -792,33 +1104,22 @@ export class Renderer {
     }
   }
 
-  private drawPlanet(): void {
+  /** Faint nebula clouds behind the stars, drifting with slow parallax. */
+  private drawNebula(): void {
+    if (!this.nebula) this.nebula = nebulaTexture();
     const ctx = this.ctx;
-    const R = this.h * 0.15;
-    const x = this.w * 0.8 - this.cam.x * 0.015;
-    const y = this.h * 0.2 - this.cam.y * 0.01;
+    const tex = this.nebula;
+    // tile the texture across the screen, scrolled with very slow parallax
+    const s = (Math.max(this.w, this.h) / tex.width) * 1.25;
+    const tw = tex.width * s;
+    const th = tex.height * s;
+    const ox = -(((this.cam.x * 0.04) % tw) + tw) % tw;
+    const oy = -(((this.cam.y * 0.025 + th * 0.3) % th) + th) % th;
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(x, y, R, 0, Math.PI * 2);
-    const g = ctx.createLinearGradient(0, y - R, 0, y + R);
-    g.addColorStop(0, 'rgba(255,106,213,0.22)');
-    g.addColorStop(1, 'rgba(90,30,160,0.05)');
-    ctx.fillStyle = g;
-    ctx.fill();
-    ctx.clip();
-    // synthwave cut-lines, thicker toward the bottom
-    ctx.fillStyle = 'rgba(2,1,9,0.9)';
-    for (let i = 0; i < 7; i++) {
-      const yy = y + R * (0.1 + i * 0.13);
-      ctx.fillRect(x - R, yy, R * 2, 1 + i * 0.9);
-    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.85;
+    for (let x = ox; x < this.w; x += tw) for (let y = oy; y < this.h; y += th) ctx.drawImage(tex, x, y, tw, th);
     ctx.restore();
-    const outline = new Path2D();
-    outline.arc(x, y, R, 0, Math.PI * 2);
-    glow(ctx, outline, '#ff6ad5', 1.2, 0.35 * config.glow);
-    const ring = new Path2D();
-    ring.ellipse(x, y, R * 1.75, R * 0.3, -0.22, Math.PI * 0.06, Math.PI * 0.94 + Math.PI);
-    glow(ctx, ring, '#ff9a3c', 1, 0.3 * config.glow);
   }
 
   /** Real bloom: blur a downscaled copy of the frame and add it back on top. */
@@ -897,104 +1198,60 @@ export class Renderer {
 
   private drawHud(game: Game): void {
     const ctx = this.ctx;
-    const h = game.heli;
     ctx.globalCompositeOperation = 'source-over';
 
-    text(ctx, 'THRUSTLIFTER', 24, 34, 20, COLORS.heli, 'left');
-    text(ctx, `// LEVEL ${game.levelNumber} · ${game.level.data.name}`, 24, 56, 12, C.hud, 'left', 0.7);
+    // score "pop" when it changes
+    if (game.score !== this.lastScore) {
+      this.scorePop = 1;
+      this.lastScore = game.score;
+    }
+    this.scorePop = Math.max(0, this.scorePop - this.frameDt * 2.5);
 
-    const alive = game.turrets.filter((t) => t.alive).length;
-    text(ctx, `TURRETS ${alive}/${game.turrets.length}`, this.w - 24, 34, 14, COLORS.target, 'right');
-    text(ctx, `DEATHS ${game.deaths}`, this.w - 24, 54, 12, C.hud, 'right', 0.8);
+    // ---- top left: score + lives, in neon brackets
+    brackets(ctx, 14, 10, 270, 128, COLORS.heli, 0.55);
+    const pop = this.scorePop;
+    text(ctx, String(game.score).padStart(6, '0'), 30, 46, 44 + pop * 8, pop > 0 ? '#fff4b0' : COLORS.heli, 'left');
+    text(ctx, 'SCORE', 32, 78, 13, C.hud, 'left', 0.75);
+    for (let i = 0; i < Math.max(0, game.lives); i++) this.drawLifeIcon(58 + i * 66, 106, 0.72);
+
+    // ---- top right: time, rescued, orb lamp, in neon brackets
+    brackets(ctx, this.w - 280, 10, 266, 128, C.hud, 0.55);
+    const t = game.completedAt ?? game.time;
+    const mm = Math.floor(t / 60);
+    const ss = (t % 60).toFixed(1).padStart(4, '0');
+    text(ctx, `${mm}:${ss}`, this.w - 30, 44, 38, C.hud, 'right');
     if (game.survivors.length) {
       const saved = game.survivors.filter((s) => s.state === 'rescued').length;
-      text(ctx, `RESCUED ${saved}/${game.survivors.length}`, this.w - 24, 90, 12, COLORS.survivor, 'right', 0.85);
+      text(ctx, `RESCUED ${saved}/${game.survivors.length}`, this.w - 30, 82, 20, COLORS.survivor, 'right', 0.95);
     }
-    text(ctx, `TIME ${(game.completedAt ?? game.time).toFixed(1)}`, this.w - 24, 72, 12, C.hud, 'right', 0.8);
-
-    // instrument cluster
-    const bx = 24;
-    const by = this.h - 30;
-    // fuel gauge (above the thrust bar)
-    const fuelK = clamp(game.fuel / config.fuelMax, 0, 1);
-    const low = fuelK < 0.2;
-    const blinkOn = Math.sin(this.clock * 9) > 0;
-    text(ctx, game.fuel <= 0 ? 'NO FUEL' : 'FUEL', bx, by - 66, 11, low ? '#ff4a4a' : C.fuelPad, 'left', low && !blinkOn ? 0.35 : 0.85);
-    if (game.refueling) text(ctx, 'REFUELING', bx + 160, by - 66, 11, C.fuelPad, 'right', 0.5 + 0.5 * Math.sin(this.clock * 8));
-    else if (game.shield) text(ctx, 'SHIELD', bx + 160, by - 66, 11, C.shield, 'right', 0.7 + 0.3 * Math.sin(this.clock * 20));
+    const lx = this.w - 44;
+    const ly = 112;
+    const lit = game.orb.delivered;
+    text(ctx, 'ORB', lx - 26, ly, 16, COLORS.orb, 'right', lit ? 1 : 0.45);
+    ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(255,225,77,0.5)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(bx, by - 58, 160, 10);
-    ctx.fillStyle = low ? 'rgba(255,74,74,0.85)' : 'rgba(255,225,77,0.85)';
-    ctx.fillRect(bx + 1, by - 57, 158 * fuelK, 8);
-
-    text(ctx, 'THRUST', bx, by - 26, 11, C.hud, 'left', 0.8);
-    const bw = 160;
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(159,232,255,0.5)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(bx, by - 18, bw, 10);
-    const hover = clamp(game.hoverRpm(), 0, 1);
-    ctx.fillStyle = h.throttle >= hover ? 'rgba(125,255,176,0.85)' : 'rgba(255,210,63,0.85)';
-    ctx.fillRect(bx + 1, by - 17, (bw - 2) * h.throttle, 8);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(bx + bw * hover - 1, by - 22, 2, 18);
-    text(ctx, 'HOVER', bx + bw * hover, by + 4, 9, '#ffffff', 'center', 0.6);
-
-    // tilt gauge
-    const gx = bx + bw + 70;
-    const gy = by - 6;
-    const gr = 34;
-    const max = config.maxTiltDeg;
-    const toA = (d: number) => -Math.PI / 2 + ((d / max) * Math.PI) / 3;
-    ctx.strokeStyle = 'rgba(159,232,255,0.45)';
-    ctx.beginPath();
-    ctx.arc(gx, gy, gr, toA(-max), toA(max));
-    ctx.stroke();
-    for (const d of [-max, 0, max]) {
-      const a = toA(d);
-      ctx.beginPath();
-      ctx.moveTo(gx + Math.cos(a) * (gr - 5), gy + Math.sin(a) * (gr - 5));
-      ctx.lineTo(gx + Math.cos(a) * (gr + 3), gy + Math.sin(a) * (gr + 3));
-      ctx.stroke();
-    }
-    const tgt = toA(toDeg(h.tiltTarget));
-    ctx.strokeStyle = 'rgba(255,61,242,0.9)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(gx + Math.cos(tgt) * (gr - 2), gy + Math.sin(tgt) * (gr - 2));
-    ctx.lineTo(gx + Math.cos(tgt) * (gr + 6), gy + Math.sin(tgt) * (gr + 6));
-    ctx.stroke();
-    const act = toA(toDeg(h.tilt));
-    ctx.strokeStyle = COLORS.heli;
+    ctx.strokeStyle = lit ? COLORS.orb : 'rgba(255,61,242,0.4)';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(gx, gy);
-    ctx.lineTo(gx + Math.cos(act) * (gr - 4), gy + Math.sin(act) * (gr - 4));
+    ctx.arc(lx, ly, 12, 0, Math.PI * 2);
     ctx.stroke();
-    const td = toDeg(h.tilt);
-    text(ctx, `TILT ${td >= 0 ? '+' : ''}${td.toFixed(0)}°`, gx, gy + 18, 11, C.hud, 'center', 0.8);
-
-    text(ctx, h.facing === 1 ? 'FACING ▶' : '◀ FACING', gx + 90, by - 14, 13, COLORS.heli, 'center');
-    const orbState = game.orb.delivered ? 'DELIVERED' : game.orb.attached ? 'ON ROD' : game.orb.free ? 'DROPPED' : 'NOT HELD';
-    text(ctx, `ORB ${orbState}`, gx + 90, by + 4, 11, COLORS.orb, 'center', game.orb.attached ? 1 : 0.6);
-    const aboard = game.survivors.filter((s) => s.state === 'aboard').length;
-    if (aboard) text(ctx, `ABOARD ${aboard}`, gx + 90, by - 32, 11, COLORS.survivor, 'center', 0.9);
-
-    const approach = game.orbApproach();
-    if (approach) {
-      const col = approach.safe ? '#3dff8a' : '#ff4a4a';
-      text(ctx, `ORB SPEED ${approach.speed.toFixed(0)}`, this.w / 2, this.h - 150, 18, col, 'center');
-      text(ctx, `max impact ${config.orbMaxImpact}`, this.w / 2, this.h - 130, 11, C.hud, 'center', 0.7);
+    if (lit) {
+      const pulse = 0.8 + 0.2 * Math.sin(this.clock * 5);
+      const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, 34 * pulse);
+      g.addColorStop(0, 'rgba(255,230,252,1)');
+      g.addColorStop(0.3, 'rgba(255,61,242,0.75)');
+      g.addColorStop(1, 'rgba(255,61,242,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(lx, ly, 34 * pulse, 0, Math.PI * 2);
+      ctx.fill();
     }
+    ctx.restore();
 
-    if (game.orbInReach() && !game.beam) {
-      text(ctx, 'HOLD SPACE TO TETHER', this.w / 2, this.h - 110, 13, COLORS.orb, 'center', 0.6 + 0.4 * Math.sin(this.clock * 6));
-    } else if (game.beam) {
-      text(ctx, 'TETHERING — PULL AWAY TO LOCK THE ROD', this.w / 2, this.h - 110, 13, COLORS.orb, 'center');
-    }
+    // ---- bottom centre: an analog fuel gauge
+    this.drawFuelGauge(game);
 
+    // ---- centre messages
     const m = game.message;
     if (m) {
       const fadeIn = clamp(m.t / 0.15, 0, 1);
@@ -1002,15 +1259,6 @@ export class Renderer {
       const a = Math.min(fadeIn, fadeOut);
       text(ctx, m.text, this.w / 2, this.h * 0.1, 40, m.color, 'center', a);
       if (m.sub) text(ctx, m.sub, this.w / 2, this.h * 0.1 + 30, 14, C.hud, 'center', a * 0.85);
-    }
-
-    if (this.helpVisible) {
-      const lines = [
-        '←/→ or A/D  tilt      ↑ or W  rotor      ↓ or S  dive',
-        'Z or J  fire      X or K  flip facing      SPACE  hold: shield + tether · tap: release orb',
-        'R restart · Tab/P pause · M mute · 1-9 level · T tuning panel · H hide this',
-      ];
-      lines.forEach((l, i) => text(ctx, l, this.w / 2, this.h - 70 + i * 17, 12, C.hud, 'center', 0.55));
     }
 
     if (this.paused) {
@@ -1046,6 +1294,196 @@ function glow(ctx: CanvasRenderingContext2D, path: Path2D, color: string | Canva
   ctx.lineWidth = Math.max(0.5, width * 0.35);
   ctx.stroke(path);
   ctx.restore();
+}
+
+/**
+ * Tileable nebula: several layers of soft, wrapped fractal noise tinted magenta, violet, teal
+ * and a touch of amber, masked so they form wisps and patches with dark gaps. Very faint.
+ */
+function nebulaTexture(): HTMLCanvasElement {
+  const N = 384;
+  let seed = 777;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const octave = (g: number) => {
+    const v = new Float32Array(g * g);
+    for (let i = 0; i < v.length; i++) v[i] = rnd();
+    return (x: number, y: number) => {
+      const fx = (x / N) * g;
+      const fy = (y / N) * g;
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const tx = fx - x0;
+      const ty = fy - y0;
+      const sx = tx * tx * (3 - 2 * tx);
+      const sy = ty * ty * (3 - 2 * ty);
+      const at = (i: number, j: number) => v[(((j % g) + g) % g) * g + (((i % g) + g) % g)];
+      const a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx;
+      const b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx;
+      return a + (b - a) * sy;
+    };
+  };
+  const fbm = () => {
+    const os = [octave(3), octave(6), octave(12), octave(24), octave(48)];
+    return (x: number, y: number) => {
+      let h = 0;
+      let a = 0.5;
+      for (const o of os) {
+        h += o(x, y) * a;
+        a *= 0.5;
+      }
+      return h / 0.97;
+    };
+  };
+  const layers: [ReturnType<typeof fbm>, [number, number, number], number, number][] = [
+    [fbm(), [190, 40, 170], 0.5, 0.8], // magenta
+    [fbm(), [80, 50, 220], 0.47, 0.9], // violet
+    [fbm(), [20, 140, 170], 0.52, 0.75], // teal
+    [fbm(), [230, 110, 40], 0.6, 0.5], // amber wisps
+  ];
+  // domain warp: bends the clouds into swirls and filaments instead of round blobs
+  const warpX = fbm();
+  const warpY = fbm();
+  const dust = fbm(); // dark dust lanes cutting through
+  const c = document.createElement('canvas');
+  c.width = N;
+  c.height = N;
+  const g = c.getContext('2d')!;
+  const img = g.createImageData(N, N);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const wx = x + (warpX(x, y) - 0.5) * N * 0.35;
+      const wy = y + (warpY(x, y) - 0.5) * N * 0.35;
+      let r = 0;
+      let gg = 0;
+      let b = 0;
+      for (const [f, col, thresh, k] of layers) {
+        const v = Math.max(0, f(wx, wy) - thresh) / (1 - thresh);
+        const a = Math.pow(v, 1.3) * k;
+        r += col[0] * a;
+        gg += col[1] * a;
+        b += col[2] * a;
+      }
+      const lane = 1 - Math.max(0, Math.min(1, (dust(wx * 1.3, wy * 1.3) - 0.45) * 3));
+      const i = (y * N + x) * 4;
+      img.data[i] = Math.min(255, r * 0.42 * lane);
+      img.data[i + 1] = Math.min(255, gg * 0.42 * lane);
+      img.data[i + 2] = Math.min(255, b * 0.42 * lane);
+      img.data[i + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+/**
+ * A tileable stone texture (built once): layered value noise for mottled rock, ridged noise for
+ * lighter mineral veins, relief shading lit from the upper left, and fine grain/speckles.
+ */
+function rockTexture(): HTMLCanvasElement {
+  const N = 512;
+  let seed = 4242;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const lattice = (g: number) => {
+    const v = new Float32Array(g * g);
+    for (let i = 0; i < v.length; i++) v[i] = rnd();
+    return v;
+  };
+  const octave = (g: number) => {
+    const v = lattice(g);
+    return (x: number, y: number) => {
+      const fx = (x / N) * g;
+      const fy = (y / N) * g;
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const tx = fx - x0;
+      const ty = fy - y0;
+      const sx = tx * tx * (3 - 2 * tx);
+      const sy = ty * ty * (3 - 2 * ty);
+      const at = (i: number, j: number) => v[(((j % g) + g) % g) * g + (((i % g) + g) % g)];
+      const a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx;
+      const b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx;
+      return a + (b - a) * sy;
+    };
+  };
+  const oct = [octave(4), octave(8), octave(16), octave(32), octave(64)];
+  const vein = [octave(6), octave(12), octave(24)];
+  const H = new Float32Array(N * N);
+  const V = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      let h = 0;
+      let amp = 0.5;
+      for (const o of oct) {
+        h += o(x, y) * amp;
+        amp *= 0.5;
+      }
+      H[y * N + x] = h / 0.97;
+      let r = 0;
+      let ra = 0.6;
+      for (const o of vein) {
+        r += (1 - Math.abs(o(x, y) * 2 - 1)) * ra;
+        ra *= 0.5;
+      }
+      V[y * N + x] = Math.pow(Math.min(1, r / 1.05), 9);
+    }
+  }
+  const c = document.createElement('canvas');
+  c.width = N;
+  c.height = N;
+  const g = c.getContext('2d')!;
+  const img = g.createImageData(N, N);
+  const at = (x: number, y: number) => H[((y + N) % N) * N + ((x + N) % N)];
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const i = y * N + x;
+      const h = H[i];
+      const relief = Math.max(0.55, Math.min(1.45, 1 + (at(x - 1, y - 1) - at(x + 1, y + 1)) * 9));
+      let r = 12 + h * 30;
+      let gg = 16 + h * 34;
+      let b = 36 + h * 62;
+      const v = V[i];
+      r += v * 55;
+      gg += v * 70;
+      b += v * 120;
+      const grain = (rnd() - 0.5) * 10;
+      const speck = rnd() < 0.004 ? 40 : rnd() < 0.006 ? -14 : 0;
+      img.data[i * 4] = Math.max(0, Math.min(255, r * relief + grain + speck));
+      img.data[i * 4 + 1] = Math.max(0, Math.min(255, gg * relief + grain + speck));
+      img.data[i * 4 + 2] = Math.max(0, Math.min(255, b * relief + grain + speck * 1.3));
+      img.data[i * 4 + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** Neon corner brackets framing a HUD panel. */
+function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string, alpha: number): void {
+  const L = 16;
+  const p = new Path2D();
+  p.moveTo(x, y + L);
+  p.lineTo(x, y);
+  p.lineTo(x + L, y);
+  p.moveTo(x + w - L, y);
+  p.lineTo(x + w, y);
+  p.lineTo(x + w, y + L);
+  p.moveTo(x + w, y + h - L);
+  p.lineTo(x + w, y + h);
+  p.lineTo(x + w - L, y + h);
+  p.moveTo(x + L, y + h);
+  p.lineTo(x, y + h);
+  p.lineTo(x, y + h - L);
+  glow(ctx, p, color, 1.5, alpha * config.glow);
 }
 
 function dot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string): void {

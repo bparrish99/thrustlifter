@@ -5,7 +5,7 @@ import type { FrameInput } from './game';
  *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z fire, X flip
  *   WASD:   A/D tilt, W rotor, S dive   with  J fire, K flip
  *   Space   hold = shield + tether beam; tap while carrying the orb = release (no shield while carrying)
- *   R restart · P/Esc/Tab pause · T tuning panel · H help · M mute · N next level (after completing) · 1-9 jump to level
+ *   R restart · P/Esc/Tab pause · T tuning panel · M mute · N next level (after completing) · 1-9 jump to level
  *
  * Gamepad (standard mapping):
  *   Left stick X tilt · RT (analog) or A rotor · LT (analog) or stick down dive · X/RB fire · B or Y flip
@@ -17,7 +17,6 @@ const DEADZONE = 0.18;
 export interface MetaInput {
   pause: boolean;
   toggleTuning: boolean;
-  toggleHelp: boolean;
   toggleMute: boolean;
   nextLevel: boolean;
   /** 0-based level index from number keys 1-9, or -1. */
@@ -59,7 +58,6 @@ export class Input {
     let restart = this.p('KeyR');
     let pause = this.p('KeyP', 'Escape', 'Tab');
     const toggleTuning = this.p('KeyT', 'Backquote');
-    const toggleHelp = this.p('KeyH');
     const toggleMute = this.p('KeyM');
     const nextLevel = this.p('KeyN');
     let jumpLevel = -1;
@@ -87,7 +85,7 @@ export class Input {
     tiltAxis = Math.max(-1, Math.min(1, tiltAxis));
     return {
       game: { tiltAxis, rotor, dive, fire, flip, pickup, pickupPressed, restart },
-      meta: { pause, toggleTuning, toggleHelp, toggleMute, nextLevel, jumpLevel },
+      meta: { pause, toggleTuning, toggleMute, nextLevel, jumpLevel },
     };
   }
 }

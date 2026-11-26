@@ -36,6 +36,7 @@ export class Sound {
   private beamOsc2!: OscillatorNode;
   private beamAir!: BiquadFilterNode;
   private shieldGain!: GainNode;
+  private enemyRotor!: GainNode;
   private nextBlip = 0;
   private nextLowFuel = 0;
   private beamTime = 0; // seconds the beam has been on (drives the rising pitch)
@@ -155,6 +156,28 @@ export class Sound {
     this.shieldGain.gain.value = 0;
     shieldMix.connect(shieldTone).connect(this.shieldGain).connect(this.sfxIn);
     for (const o of [s1, s2, shimmer]) o.start();
+
+    // enemy rotors: a lighter, higher chop, loudest when a guard heli is close
+    const eNoise = ctx.createBufferSource();
+    eNoise.buffer = this.noise;
+    eNoise.loop = true;
+    const eBand = ctx.createBiquadFilter();
+    eBand.type = 'bandpass';
+    eBand.frequency.value = 520;
+    eBand.Q.value = 1.1;
+    const eChop = ctx.createGain();
+    eChop.gain.value = 0.3;
+    const eLfo = ctx.createOscillator();
+    eLfo.setPeriodicWave(thwupWave(ctx));
+    eLfo.frequency.value = 17;
+    const eDepth = ctx.createGain();
+    eDepth.gain.value = 0.3;
+    eLfo.connect(eDepth).connect(eChop.gain);
+    this.enemyRotor = ctx.createGain();
+    this.enemyRotor.gain.value = 0;
+    eNoise.connect(eBand).connect(eChop).connect(this.enemyRotor).connect(this.sfxIn);
+    eNoise.start();
+    eLfo.start();
     for (const o of [this.beamOsc, this.beamOsc2, pulse]) o.start();
 
     this.master = ctx.createGain();
@@ -261,6 +284,16 @@ export class Sound {
         break;
       case 'rescued': // short happy run up
         [523.25, 659.25, 783.99, 880, 1046.5].forEach((f, i) => this.tone(t + i * 0.07, { type: 'triangle', f0: f, f1: f, dur: 0.5, gain: 0.13, attack: 0.005, lowpass: 2600 }));
+        break;
+      case 'balloonPop': // pop! then a rubbery flap of falling scraps
+        this.noiseHit(t, { dur: 0.12, type: 'highpass', f0: 1200, f1: 600, gain: 0.6 * v });
+        this.tone(t, { type: 'sine', f0: 160, f1: 70, dur: 0.25, gain: 0.5 * v });
+        this.tone(t + 0.05, { type: 'triangle', f0: 420, f1: 140, dur: 0.5, gain: 0.08 * v, lowpass: 1200 });
+        this.boom(t, 0.3, v * 0.6);
+        break;
+      case 'enemyLaunch': // guard spinning up: a rising whoosh with a turbine whine
+        this.noiseHit(t, { dur: 1.2, type: 'bandpass', f0: 250, f1: 900, q: 1.2, gain: 0.45 * v, attack: 0.4 });
+        this.tone(t, { type: 'triangle', f0: 180, f1: 520, dur: 1.2, gain: 0.08 * v, attack: 0.3, lowpass: 1500 });
         break;
       case 'shieldHit': // electric zap as the shield eats a shot
         this.noiseHit(t, { dur: 0.3, type: 'bandpass', f0: 2400, f1: 700, q: 2, gain: 0.5 * v });
@@ -420,6 +453,12 @@ export class Sound {
     this.beamOsc.frequency.setTargetAtTime(bf, t, 0.03);
     this.beamOsc2.frequency.setTargetAtTime(bf * 2, t, 0.03);
     this.beamAir.frequency.setTargetAtTime(bf * 3, t, 0.03);
+
+    // enemy rotor chop by distance to the nearest flying guard
+    let near = Infinity;
+    for (const e of game.enemies) if (e.state !== 'parked') near = Math.min(near, Math.hypot(e.pos.x - game.heli.pos.x, e.pos.y - game.heli.pos.y));
+    const eLevel = paused || !game.alive ? 0 : Math.max(0, 1 - near / 1100) * 0.5;
+    this.enemyRotor.gain.setTargetAtTime(eLevel, t, 0.1);
 
     // shield hum
     this.shieldGain.gain.setTargetAtTime(game.shield && !paused ? 0.2 : 0, t, 0.04);

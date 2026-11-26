@@ -7,7 +7,8 @@ import { createTuningPanel } from './tuning';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 let levelIndex = 0;
-const makeGame = (i: number) => new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length });
+const makeGame = (i: number, carry?: { lives: number; score: number }) =>
+  new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length, lives: carry?.lives, score: carry?.score });
 let game = makeGame(levelIndex);
 const renderer = new Renderer(canvas);
 const input = new Input(window);
@@ -24,12 +25,13 @@ function frame(now: number): void {
   const { game: gi, meta } = input.poll();
   if (meta.pause) paused = !paused;
   if (meta.toggleTuning) tuning._hidden ? tuning.show() : tuning.hide();
-  if (meta.toggleHelp) renderer.helpVisible = !renderer.helpVisible;
   if (meta.toggleMute) sound.toggleMute();
   const goTo = meta.jumpLevel >= 0 && meta.jumpLevel < LEVELS.length ? meta.jumpLevel : meta.nextLevel && game.phase === 'complete' && game.hasNextLevel ? levelIndex + 1 : -1;
   if (goTo >= 0) {
+    // N (next level) carries lives and score over; number-key jumps start fresh
+    const carry = meta.jumpLevel < 0 ? { lives: game.lives, score: game.score } : undefined;
     levelIndex = goTo;
-    game = makeGame(levelIndex);
+    game = makeGame(levelIndex, carry);
     (window as unknown as { game: Game }).game = game;
   }
   renderer.paused = paused;

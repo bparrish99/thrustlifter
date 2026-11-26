@@ -2,6 +2,8 @@
   "name": "DEEP CAVERNS",
   "width": 4400,
   "backdropY": 640,
+  "startFuelMin": 70,
+  "checkpoints": [{ "x": 3820, "y": 1996, "after": "delivery", "fuel": 45 }],
   "terrain": [
     [
       0, 2700,
@@ -83,8 +85,12 @@
   ],
   "pads": [
     { "x": 200, "y": 590, "w": 160, "kind": "start" },
-    { "x": 1150, "y": 1440, "w": 110, "kind": "rescue" },
-    { "x": 3980, "y": 2240, "w": 140, "kind": "rescue" }
+    { "x": 1150, "y": 1440, "w": 110, "kind": "rescue", "guards": 1 },
+    { "x": 3980, "y": 2240, "w": 140, "kind": "rescue", "guards": 1, "guardsAfter": "delivery" }
+  ],
+  "balloons": [
+    { "x": 2050, "y": 330 },
+    { "x": 3250, "y": 360 }
   ],
   "fuelTanks": [
     { "x": 1700, "y": 600 },

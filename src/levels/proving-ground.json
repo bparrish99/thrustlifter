@@ -1,6 +1,8 @@
 {
   "name": "PROVING GROUND",
   "width": 4200,
+  "startFuelMin": 45,
+  "checkpoints": [{ "x": 3700, "y": 626, "after": "delivery", "fuel": 35 }],
   "terrain": [
     [
       0, 1400,
@@ -45,7 +47,11 @@
   ],
   "pads": [
     { "x": 200, "y": 850, "w": 160, "kind": "start" },
-    { "x": 3020, "y": 850, "w": 120, "kind": "rescue" }
+    { "x": 3020, "y": 850, "w": 120, "kind": "rescue", "guards": 2 }
+  ],
+  "balloons": [
+    { "x": 900, "y": 360 },
+    { "x": 2450, "y": 280, "patrol": 110 }
   ],
   "fuelTanks": [
     { "x": 1450, "y": 835 },

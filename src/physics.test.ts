@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULTS } from './config';
-import { Game, STEP, type FrameInput } from './game';
+import { Game, STEP, TANK_H, type FrameInput } from './game';
 import provingGround from './levels/proving-ground.json';
 import type { LevelData } from './level';
 import { deg, dist, distPointSegment, segmentsIntersect } from './math';
@@ -9,6 +9,8 @@ import { buildLevel, segmentsNear, type Level } from './level';
 import { ANCHOR, createHeli, heliPoint, integrate, noseDir, rotorNormal, solveRod, thrustForce, type Body } from './physics';
 
 const cfg = { ...DEFAULTS };
+/** Proving Ground with its rescue-pad guards removed (for tests about landing there). */
+const noGuards = { ...(provingGround as LevelData), pads: (provingGround as LevelData).pads.map((p) => ({ ...p, guards: 0 })) } as LevelData;
 const idle: FrameInput = { tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false, restart: false };
 
 describe('geometry', () => {
@@ -295,7 +297,8 @@ describe('orb bowl, release and return to base', () => {
 describe('turrets', () => {
   // Proving Ground turret 0 sits on a hilltop at (940, 610), facing up.
   const scene = (heliPos: { x: number; y: number }) => {
-    const g = new Game(provingGround as LevelData);
+    const g = new Game(noGuards);
+    g.balloons = []; // turrets only
     g.heli.landed = false;
     g.heli.pos = { ...heliPos };
     g.turrets.forEach((t, i) => (t.alive = i === 0));
@@ -421,20 +424,31 @@ describe('Deep Caverns is flyable', () => {
     expect(orb.min, `orb tightest at ${orb.where}`).toBeGreaterThan(ORB);
   });
 
-  it('no turret can see any part of the carry route (enemies only on the way in and home)', () => {
+  it('no turret or balloon can see any part of the carry route (enemies only on the way in and home)', () => {
     sealGate.open = false;
     exitGate.open = false;
-    for (const t of LEVELS[1].turrets) {
+    // eyes: every turret, plus each balloon's gun anywhere around its drift loop
+    const eyes: { name: string; eye: { x: number; y: number }; range: number }[] = LEVELS[1].turrets.map((t) => {
       const a = deg(t.dir ?? -90);
-      const eye = { x: t.x + Math.cos(a) * 8, y: t.y + Math.sin(a) * 8 };
+      return { name: `turret at ${t.x},${t.y}`, eye: { x: t.x + Math.cos(a) * 8, y: t.y + Math.sin(a) * 8 }, range: cfg.turretRange };
+    });
+    for (const b of LEVELS[1].balloons ?? []) {
+      const r = b.patrol ?? cfg.balloonPatrol;
+      for (let k = 0; k < 8; k++) {
+        const a = (k * Math.PI) / 4;
+        eyes.push({ name: `balloon at ${b.x},${b.y}`, eye: { x: b.x + Math.cos(a) * r, y: b.y + Math.sin(a) * r * 0.5 + 52 }, range: cfg.balloonFireRange });
+      }
+    }
+    for (const { name, eye, range } of eyes) {
+      const t = { x: Math.round(eye.x), y: Math.round(eye.y) };
       for (let i = 0; i + 1 < CARRY.length; i++) {
         for (let k = 0; k <= 10; k++) {
           const [ax, ay] = CARRY[i];
           const [bx, by] = CARRY[i + 1];
           const p = { x: ax + ((bx - ax) * k) / 10, y: ay + ((by - ay) * k) / 10 };
           for (const q of [p, { x: p.x, y: p.y + ORB_DROP }]) {
-            const seen = dist(eye, q) < cfg.turretRange && lineOfSight(eye, q);
-            expect(seen, `turret at ${t.x},${t.y} sees ${Math.round(q.x)},${Math.round(q.y)}`).toBe(false);
+            const seen = dist(eye, q) < range && lineOfSight(eye, q);
+            expect(seen, `${name} (eye ${t.x},${t.y}) sees ${Math.round(q.x)},${Math.round(q.y)}`).toBe(false);
           }
         }
       }
@@ -519,7 +533,7 @@ describe('fuel and shield', () => {
     g.heli.landed = false;
     let seconds = 0;
     for (let i = 0; i < 3 * 60 && tank.alive; i++, seconds += 1 / 60) {
-      g.heli.pos = { x: 1300, y: 830 - 22 - 90 };
+      g.heli.pos = { x: 1300, y: 830 - TANK_H - 90 };
       g.heli.vel = { x: 0, y: 0 };
       g.update({ ...idle, pickup: true }, 1 / 60);
     }
@@ -534,7 +548,7 @@ describe('fuel and shield', () => {
     g.fuel = 10;
     g.heli.landed = false;
     const hover = (input: Partial<FrameInput>) => {
-      g.heli.pos = { x: 1300, y: 830 - 22 - 90 };
+      g.heli.pos = { x: 1300, y: 830 - TANK_H - 90 };
       g.heli.vel = { x: 0, y: 0 };
       g.update({ ...idle, ...input }, 1 / 60);
     };
@@ -553,13 +567,13 @@ describe('fuel and shield', () => {
   it('fuel tanks can be shot', () => {
     const g = new Game(provingGround as LevelData);
     const tank = g.fuelTanks.find((t) => t.pos.x === 1300)!;
-    g.projectiles.push({ kind: 'missile', pos: { x: 1230, y: 819 }, vel: { x: 600, y: 0 }, life: 1, dir: { x: 1, y: 0 }, base: { x: 0, y: 0 }, speed: 600 });
+    g.projectiles.push({ kind: 'missile', pos: { x: 1230, y: 830 - TANK_H / 2 }, vel: { x: 600, y: 0 }, life: 1, dir: { x: 1, y: 0 }, base: { x: 0, y: 0 }, speed: 600 });
     for (let i = 0; i < 30; i++) g.update(idle, 1 / 60);
     expect(tank.alive).toBe(false);
   });
 
   it('pads do not refuel; each survivor who climbs aboard adds a little fuel', () => {
-    const g = new Game(provingGround as LevelData);
+    const g = new Game(noGuards);
     g.fuel = 20;
     g.heli.landed = false;
     g.heli.pos = { x: 3080, y: 825 };
@@ -573,22 +587,20 @@ describe('fuel and shield', () => {
     expect(g.fuel).toBeCloseTo(landedFuel + 2 * cfg.rescueFuelBoost, 0);
   });
 
-  it('no refuel on death (beyond a small safety reserve)', () => {
-    const g = new Game(provingGround as LevelData);
-    g.fuel = 40;
-    g.heli.landed = false;
-    g.heli.pos = { x: 700, y: 600 };
-    g.heli.vel = { x: 0, y: 400 };
-    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
-    expect(g.fuel).toBeLessThan(42);
-    expect(g.fuel).toBeGreaterThan(30);
-    const g2 = new Game(provingGround as LevelData);
-    g2.fuel = 0;
-    g2.heli.landed = false;
-    g2.heli.pos = { x: 700, y: 600 };
-    g2.heli.vel = { x: 0, y: 400 };
-    for (let i = 0; i < 4 * 60; i++) g2.update(idle, 1 / 60);
-    expect(g2.fuel).toBeCloseTo(cfg.fuelRespawnMin, 0);
+  it('no refuel on death: you keep your fuel, topped up only to the checkpoint minimum', () => {
+    const crashWith = (fuel: number) => {
+      const g = new Game(provingGround as LevelData);
+      g.fuel = fuel;
+      g.heli.landed = false;
+      g.heli.pos = { x: 700, y: 600 };
+      g.heli.vel = { x: 0, y: 400 };
+      for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
+      return g.fuel;
+    };
+    const min = (provingGround as LevelData).startFuelMin!;
+    expect(crashWith(80)).toBeLessThan(81); // kept, not refilled
+    expect(crashWith(80)).toBeGreaterThan(70);
+    expect(crashWith(0)).toBeCloseTo(min, 0); // topped up to the minimum
   });
 
   it('holding Space raises a shield that burns fuel and absorbs enemy shots', () => {
@@ -624,7 +636,7 @@ describe('survivors', () => {
   };
 
   it('run to the heli when it lands nearby and climb aboard', () => {
-    const g = new Game(provingGround as LevelData);
+    const g = new Game(noGuards);
     landOnFuelPad(g);
     expect(g.heli.landed).toBe(true);
     for (let i = 0; i < 3 * 60; i++) g.update(idle, 1 / 60);
@@ -632,7 +644,7 @@ describe('survivors', () => {
   });
 
   it('are counted as rescued when you land back on your pad, and lost if you crash with them', () => {
-    const g = new Game(provingGround as LevelData);
+    const g = new Game(noGuards);
     g.survivors[0].state = 'aboard';
     g.survivors[1].state = 'aboard';
     g.heli.landed = false;
@@ -641,7 +653,7 @@ describe('survivors', () => {
     for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
     expect(g.survivors.every((s) => s.state === 'rescued')).toBe(true);
 
-    const g2 = new Game(provingGround as LevelData);
+    const g2 = new Game(noGuards);
     g2.survivors[0].state = 'aboard';
     g2.heli.landed = false;
     g2.heli.pos = { x: 700, y: 600 };
@@ -695,12 +707,164 @@ describe('Space never switches abilities mid-press', () => {
     };
     at(1300, 300, { pickup: true, pickupPressed: true }); // open sky: shield
     expect(g.shield).toBe(true);
-    at(1300, 830 - 22 - 90, { pickup: true }); // now over the tank
+    at(1300, 830 - TANK_H - 90, { pickup: true }); // now over the tank
     expect(g.refueling).toBe(false);
     expect(g.shield).toBe(true);
     at(g.orb.home.x, g.orb.home.y - 100, { pickup: true }); // now in orb range
     expect(g.beam).toBe(false);
     expect(g.orb.attached).toBe(false);
     expect(g.shield).toBe(true);
+  });
+});
+
+describe('guard helicopters', () => {
+  // Proving Ground rescue pad (x 3020..3140, top 850) has 2 guards.
+  const hoverAt = (g: Game, x: number, y: number, seconds: number, input: Partial<FrameInput> = {}) => {
+    for (let i = 0; i < seconds * 60 && g.phase === 'playing'; i++) {
+      g.heli.landed = false;
+      g.heli.pos = { x, y };
+      g.heli.vel = { x: 0, y: 0 };
+      g.update({ ...idle, ...input }, 1 / 60);
+    }
+  };
+
+  it('stay parked on their pad while you are far away', () => {
+    const g = new Game(provingGround as LevelData);
+    g.turrets.forEach((t) => (t.alive = false));
+    g.balloons = [];
+    hoverAt(g, 1300, 300, 2);
+    expect(g.enemies.length).toBe(1);
+    expect(g.enemies[0].state).toBe('parked');
+  });
+
+  it('launch when you come near, telegraph, and can shoot you down', () => {
+    const g = new Game(provingGround as LevelData);
+    g.turrets.forEach((t) => (t.alive = false));
+    g.balloons = [];
+    let sawCharge = false;
+    for (let i = 0; i < 12 * 60 && g.phase === 'playing'; i++) {
+      g.heli.landed = false;
+      g.heli.pos = { x: 2950, y: 450 };
+      g.heli.vel = { x: 0, y: 0 };
+      g.update(idle, 1 / 60);
+      if (g.enemies.some((e) => e.charge > 0.3)) sawCharge = true;
+    }
+    expect(sawCharge).toBe(true);
+    expect(g.phase).toBe('dead');
+    expect(g.lastCrash).toBe('SHOT DOWN');
+  });
+
+  it('one missile downs a guard; the next launches after a delay; then the pad is clear', () => {
+    const g = new Game(provingGround as LevelData);
+    g.turrets.forEach((t) => (t.alive = false));
+    g.balloons = [];
+    hoverAt(g, 1300, 300, 0.1);
+    const first = g.enemies[0];
+    g.projectiles.push({ kind: 'missile', pos: { x: first.pos.x - 60, y: first.pos.y }, vel: { x: 700, y: 0 }, life: 1, dir: { x: 1, y: 0 }, base: { x: 0, y: 0 }, speed: 700 });
+    hoverAt(g, 1300, 300, 0.3);
+    expect(first.alive).toBe(false);
+    expect(g.enemies.length).toBe(0);
+    hoverAt(g, 1300, 300, cfg.enemyRespawn + 0.5);
+    expect(g.enemies.length).toBe(1); // second guard
+    g.destroyEnemy(g.enemies[0]);
+    hoverAt(g, 1300, 300, cfg.enemyRespawn * 2);
+    expect(g.enemies.length).toBe(0); // only 2 guards on this pad
+  });
+
+  it('the next guard waits to appear until you are clear of its pad', () => {
+    const g = new Game(provingGround as LevelData);
+    g.turrets.forEach((t) => (t.alive = false));
+    g.balloons = [];
+    hoverAt(g, 1300, 300, 0.1);
+    g.destroyEnemy(g.enemies[0]);
+    hoverAt(g, 3080, 700, cfg.enemyRespawn + 2); // hanging right over the pad
+    expect(g.enemies.length).toBe(0);
+    hoverAt(g, 1300, 300, 0.2); // move away
+    expect(g.enemies.length).toBe(1);
+  });
+
+  it('no more guards come once that pad\'s survivors have been picked up', () => {
+    const g = new Game(provingGround as LevelData);
+    g.turrets.forEach((t) => (t.alive = false));
+    g.balloons = [];
+    hoverAt(g, 1300, 300, 0.1);
+    g.destroyEnemy(g.enemies[0]);
+    g.survivors.forEach((sv) => (sv.state = 'aboard'));
+    hoverAt(g, 1300, 300, cfg.enemyRespawn * 2);
+    expect(g.enemies.length).toBe(0);
+  });
+
+  it('guards set to wake after delivery stay parked until the orb is delivered', () => {
+    const data = { ...noGuards, pads: noGuards.pads.map((p) => (p.kind === 'rescue' ? { ...p, guards: 1, guardsAfter: 'delivery' as const } : p)) };
+    const g = new Game(data);
+    g.turrets.forEach((t) => (t.alive = false));
+    g.balloons = [];
+    hoverAt(g, 1300, 300, 0.1); // guard is placed while you're far away
+    hoverAt(g, 2900, 600, 3);
+    expect(g.enemies[0].state).toBe('parked');
+    g.orb.delivered = true;
+    hoverAt(g, 2900, 600, 0.5);
+    expect(g.enemies[0].state).not.toBe('parked');
+  });
+});
+
+describe('balloons', () => {
+  it('drift around, shoot at you, and pop from one missile', () => {
+    const g = new Game(noGuards);
+    g.turrets.forEach((t) => (t.alive = false));
+    const b = g.balloons[0]; // Proving Ground balloon around (900, 360)
+    const start = { ...b.pos };
+    let shots = 0;
+    for (let i = 0; i < 8 * 60 && g.phase === 'playing'; i++) {
+      g.heli.landed = false;
+      g.heli.pos = { x: 1150, y: 500 };
+      g.heli.vel = { x: 0, y: 0 };
+      g.update({ ...idle, pickup: true, pickupPressed: i === 0 }, 1 / 60); // shield up so we survive
+      if (g.events.some((e) => e.type === 'enemyShot')) shots++;
+      g.events.length = 0;
+    }
+    expect(dist(b.pos, start)).toBeGreaterThan(20); // it moved
+    expect(shots).toBeGreaterThan(0);
+    g.projectiles.push({ kind: 'missile', pos: { x: b.pos.x - 80, y: b.pos.y }, vel: { x: 800, y: 0 }, life: 1, dir: { x: 1, y: 0 }, base: { x: 0, y: 0 }, speed: 800 });
+    g.update(idle, 1 / 10);
+    g.update(idle, 1 / 10);
+    expect(b.alive).toBe(false);
+  });
+});
+
+describe('no soft-locks', () => {
+  it('landing with an empty tank strands you: no explosion, respawn with the checkpoint fuel minimum', () => {
+    const g = new Game(noGuards);
+    g.balloons = [];
+    g.turrets.forEach((t) => (t.alive = false));
+    g.survivors[0].state = 'aboard';
+    g.fuel = 0;
+    for (let i = 0; i < 2 * 60; i++) g.update(idle, 1 / 60); // sitting on the start pad, dry
+    expect(g.phase).toBe('playing');
+    for (let i = 0; i < 2 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.lastCrash).toBe('STRANDED');
+    expect(g.survivors[0].state).toBe('waiting'); // climbed back out, not lost
+    for (let i = 0; i < 3 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.phase).toBe('playing');
+    expect(g.fuel).toBeGreaterThanOrEqual((provingGround as LevelData).startFuelMin! - 0.01);
+  });
+
+  it('each level defines fuel minimums for its respawn points', () => {
+    for (const d of LEVELS) {
+      expect(d.startFuelMin, d.name).toBeGreaterThan(0);
+      expect(d.checkpoints?.find((c) => c.after === 'delivery')?.fuel, d.name).toBeGreaterThan(0);
+    }
+  });
+
+  it('after delivery you respawn with at least that checkpoint\'s fuel', () => {
+    const g = new Game(LEVELS[1]);
+    g.orb.delivered = true;
+    g.fuel = 0;
+    g.heli.landed = false;
+    g.heli.pos = { x: 860, y: 700 };
+    g.heli.vel = { x: 0, y: 900 };
+    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.held).toBe(true);
+    expect(g.fuel).toBeGreaterThanOrEqual(LEVELS[1].checkpoints![0].fuel! - 0.01);
   });
 });
