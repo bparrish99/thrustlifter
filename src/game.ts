@@ -85,6 +85,14 @@ export interface EnemyHeli {
   charge: number; // 0..1 telegraph before a shot
   lostSight: number; // seconds without seeing you
   alive: boolean;
+  lastSeen: Vec | null; // where you were last seen (chased when out of sight)
+  path: Vec[]; // nav-grid route to the current goal
+  pathT: number; // seconds until the route is recomputed
+  orbit: number; // angle of its attack position around you
+  orbitDir: 1 | -1;
+  orbitT: number; // seconds until it may switch orbit direction
+  burst: number; // shots left in the current burst
+  burstT: number;
 }
 
 interface GuardPost {
@@ -281,9 +289,13 @@ export class Game {
   restart(): void {
     const d = this.level.data;
     this.turrets = d.turrets.map((t) => {
-      const a = deg(t.dir ?? -90);
-      const normal = { x: Math.cos(a), y: Math.sin(a) };
-      return { pos: { x: t.x, y: t.y }, normal, alive: true, aim: a, cooldown: 1 + Math.random() * this.cfg.turretInterval, charge: 0, tracking: false };
+      // sit flush on the surface it was placed on, whatever its angle (floor, slope, wall, ceiling, pad)
+      const a0 = deg(t.dir ?? -90);
+      const mount = this.surfaceAt({ x: t.x, y: t.y }, { x: Math.cos(a0), y: Math.sin(a0) });
+      const pos = mount?.pos ?? { x: t.x, y: t.y };
+      const normal = mount?.normal ?? { x: Math.cos(a0), y: Math.sin(a0) };
+      const a = Math.atan2(normal.y, normal.x);
+      return { pos, normal, alive: true, aim: a, cooldown: 1 + Math.random() * this.cfg.turretInterval, charge: 0, tracking: false };
     });
     this.orb = {
       pos: { ...d.orb },
@@ -1060,6 +1072,14 @@ export class Game {
         charge: 0,
         lostSight: 0,
         alive: true,
+        lastSeen: null,
+        path: [],
+        pathT: 0,
+        orbit: -Math.PI / 2,
+        orbitDir: Math.random() < 0.5 ? 1 : -1,
+        orbitT: 2,
+        burst: 0,
+        burstT: 0,
       });
     }
 
@@ -1070,6 +1090,7 @@ export class Game {
       const d = dist(e.pos, h.pos);
       const sees = this.alive && this.exposed && d < cfg.enemyDetect && this.lineOfSight(e.pos, h.pos);
       e.lostSight = sees ? 0 : e.lostSight + dt;
+      if (sees) e.lastSeen = { ...h.pos };
       let target: Vec | null = null;
 
       if (e.state === 'parked') {
@@ -1082,73 +1103,67 @@ export class Game {
         target = home;
         if (e.pos.y <= home.y + 20) e.state = 'hunting';
       } else if (e.state === 'hunting') {
-        if (!this.alive || e.lostSight > 2 || dist(e.pos, home) > cfg.enemyLeash) {
+        if (!this.alive || !this.exposed || dist(e.pos, home) > cfg.enemyLeash || (!sees && e.lostSight > cfg.enemyChase)) {
           e.state = 'returning';
+          e.path = [];
+        } else if (sees) {
+          target = this.attackPoint(e, home);
         } else {
-          const side = Math.sign(e.pos.x - h.pos.x) || 1;
-          target = { x: h.pos.x + side * cfg.enemyStandoff, y: h.pos.y - 60 };
-          // stay on the leash
-          const off = sub(target, home);
-          const ol = len(off);
-          if (ol > cfg.enemyLeash * 0.9) target = add(home, scale(off, (cfg.enemyLeash * 0.9) / ol));
+          // chase: it follows the sound of your rotor, routing through the caves to wherever you are
+          target = h.pos;
         }
       } else if (e.state === 'returning') {
         target = home;
-        if (sees && dist(e.pos, home) < cfg.enemyLeash * 0.8) e.state = 'hunting';
+        if (sees && this.exposed && dist(e.pos, home) < cfg.enemyLeash * 0.8) e.state = 'hunting';
       }
 
       if (target) {
-        e.spin = Math.min(1, e.spin + dt * 1.5);
-        // steer: accelerate toward a desired velocity aimed at the target
-        const to = sub(target, e.pos);
-        const tl = len(to);
-        const want = tl > 1 ? scale(to, Math.min(cfg.enemyHeliSpeed, tl * 1.5) / tl) : { x: 0, y: 0 };
-        // terrain avoidance: look ahead, and keep clear of floors and ceilings
-        const ahead = add(e.pos, scale(e.vel, 0.7));
-        if (!this.lineOfSight(e.pos, ahead)) {
-          want.x = -e.vel.x * 0.5;
-          want.y = -cfg.enemyHeliSpeed * 0.6;
-        }
-        const floor = this.groundBelow(e.pos, 120);
-        if (floor !== null && floor - e.pos.y < 80 && e.state !== 'launching') want.y = Math.min(want.y, -cfg.enemyHeliSpeed * 0.5);
-        const ceil = this.ceilingAbove(e.pos, 90);
-        if (ceil !== null && e.pos.y - ceil < 70) want.y = Math.max(want.y, cfg.enemyHeliSpeed * 0.4);
-        const dv = sub(want, e.vel);
-        const dl = len(dv);
-        const maxDv = cfg.enemyHeliAccel * dt;
-        e.vel = dl > maxDv ? add(e.vel, scale(dv, maxDv / dl)) : want;
-        e.pos = add(e.pos, scale(e.vel, dt));
+        e.spin = Math.min(1, e.spin + dt * 2);
+        this.steerGuard(e, target, dt);
       }
       e.rotorPhase += (9 + e.spin * 18) * dt;
-      e.tilt += (Math.max(-0.5, Math.min(0.5, (e.vel.x / cfg.enemyHeliSpeed) * 0.45)) - e.tilt) * (1 - Math.exp(-5 * dt));
+      e.tilt += (Math.max(-0.6, Math.min(0.6, (e.vel.x / cfg.enemyHeliSpeed) * 0.55)) - e.tilt) * (1 - Math.exp(-6 * dt));
       if (e.state !== 'parked' && this.alive) e.facing = h.pos.x >= e.pos.x ? 1 : -1;
 
-      // shooting: telegraph with a charge glow, then fire at you (partial lead)
+      // shooting: telegraph with a charge glow, then a quick burst, leading your movement
+      const fire = () => {
+        const muzzle = toWorldPoint(e, NOSE);
+        const tFly = dist(muzzle, h.pos) / cfg.turretShotSpeed;
+        const aim = { x: h.pos.x + h.vel.x * tFly * cfg.enemyLead, y: h.pos.y + h.vel.y * tFly * cfg.enemyLead };
+        const dir = sub(aim, muzzle);
+        const dl2 = len(dir) || 1;
+        this.projectiles.push({ kind: 'enemy', pos: muzzle, vel: scale(dir, cfg.turretShotSpeed / dl2), life: cfg.enemyFireRange / cfg.turretShotSpeed + 0.8 });
+        this.events.push({ type: 'enemyShot', pos: muzzle });
+      };
+      if (e.burst > 0) {
+        e.burstT -= dt;
+        if (e.burstT <= 0 && sees) {
+          fire();
+          e.burst--;
+          e.burstT = 0.15;
+        }
+      }
       if (e.state === 'hunting' && sees && d < cfg.enemyFireRange) {
         e.cooldown -= dt;
         e.charge = e.cooldown < cfg.enemyCharge ? 1 - Math.max(0, e.cooldown) / Math.max(cfg.enemyCharge, 0.01) : 0;
         if (e.cooldown <= 0) {
-          const muzzle = toWorldPoint(e, NOSE);
-          const tFly = d / cfg.turretShotSpeed;
-          const aim = { x: h.pos.x + h.vel.x * tFly * 0.4, y: h.pos.y + h.vel.y * tFly * 0.4 };
-          const dir = sub(aim, muzzle);
-          const dl2 = len(dir) || 1;
-          this.projectiles.push({ kind: 'enemy', pos: muzzle, vel: scale(dir, cfg.turretShotSpeed / dl2), life: cfg.enemyFireRange / cfg.turretShotSpeed + 0.8 });
-          this.events.push({ type: 'enemyShot', pos: muzzle });
+          fire();
+          e.burst = Math.max(0, Math.round(cfg.enemyBurst) - 1);
+          e.burstT = 0.15;
           e.cooldown = cfg.enemyFireInterval * (0.8 + Math.random() * 0.4);
           e.charge = 0;
         }
       } else {
         e.charge = Math.max(0, e.charge - dt * 3);
-        e.cooldown = Math.max(e.cooldown, cfg.enemyCharge + 0.3);
+        e.cooldown = Math.max(e.cooldown, cfg.enemyCharge + 0.2);
       }
 
       // flying guards die if they hit terrain (not their own pad while taking off)
       if (e.state === 'hunting' || e.state === 'returning') {
         const r = 24;
-        for (const s of segmentsNear(this.level, e.pos.x - r, e.pos.y - r, e.pos.x + r, e.pos.y + r)) {
-          if (s.pad === e.pad) continue;
-          if (distPointSegment(e.pos, s.a, s.b) < r) {
+        for (const sg of segmentsNear(this.level, e.pos.x - r, e.pos.y - r, e.pos.x + r, e.pos.y + r)) {
+          if (sg.pad === e.pad) continue;
+          if (distPointSegment(e.pos, sg.a, sg.b) < r) {
             this.destroyEnemy(e);
             break;
           }
@@ -1231,6 +1246,250 @@ export class Game {
     const c = pad.x + pad.w / 2;
     const near = this.survivors.filter((s) => Math.abs(s.pos.x - c) < SURVIVOR_CALL_RANGE + pad.w && Math.abs(s.pos.y - pad.y) < 80);
     return near.length > 0 && near.every((s) => s.state !== 'waiting' && s.state !== 'running');
+  }
+
+  /**
+   * Where a hunting guard wants to be: circling you at standoff range, preferring spots above you,
+   * that are in open air with a clear shot. Tries a few angles if the preferred one is blocked.
+   */
+  private attackPoint(e: EnemyHeli, home: Vec): Vec {
+    const cfg = this.cfg;
+    const h = this.heli;
+    e.orbitT -= 1 / 60;
+    if (e.orbitT <= 0) {
+      if (Math.random() < 0.35) e.orbitDir = e.orbitDir === 1 ? -1 : 1;
+      e.orbitT = 1.5 + Math.random() * 2;
+    }
+    e.orbit += e.orbitDir * 0.9 * (1 / 60);
+    // first choice: circling above and to the side of you. In low caves where that's blocked,
+    // fall back to level with you, then below.
+    for (const lift of [0.7, 0.25, -0.35]) {
+      for (let k = 0; k < 8; k++) {
+        const a = e.orbit + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.6;
+        const up = lift >= 0 ? Math.abs(Math.sin(a)) * cfg.enemyStandoff * lift + 40 * lift : lift * cfg.enemyStandoff;
+        const p = { x: h.pos.x + Math.cos(a) * cfg.enemyStandoff, y: h.pos.y - up };
+        if (dist(p, home) > cfg.enemyLeash * 0.95) continue;
+        if (this.clearance(p) < 75) continue;
+        if (!this.lineOfSight(p, h.pos)) continue;
+        if (k) e.orbit = a;
+        return p;
+      }
+    }
+    return { ...e.pos }; // nowhere better: hold position
+  }
+
+  /** Fly a guard toward `target`: route around rock via the nav grid, keep off the walls, brake before hitting things. */
+  private steerGuard(e: EnemyHeli, target: Vec, dt: number): void {
+    const cfg = this.cfg;
+    const V = cfg.enemyHeliSpeed;
+    let goal = target;
+    const direct = e.state === 'launching' || this.clearPath(e.pos, target, 30);
+    if (!direct) {
+      e.pathT -= dt;
+      if (e.pathT <= 0 || e.path.length === 0) {
+        e.path = this.navPath(e.pos, target);
+        e.pathT = 0.4;
+      }
+      while (e.path.length > 1 && dist(e.pos, e.path[0]) < 36) e.path.shift();
+      // head for the farthest waypoint we can reach in a straight line
+      for (let i = Math.min(e.path.length - 1, 12); i >= 0; i--) {
+        if (this.clearPath(e.pos, e.path[i], 26)) {
+          goal = e.path[i];
+          break;
+        }
+      }
+    } else {
+      e.path = [];
+    }
+    const to = sub(goal, e.pos);
+    const tl = len(to);
+    const speed = goal === target ? Math.min(V, tl * 2.5) : V;
+    let want = tl > 1 ? scale(to, speed / tl) : { x: 0, y: 0 };
+    // push away from nearby walls (stronger the closer they are)
+    const R = 85;
+    for (const sg of segmentsNear(this.level, e.pos.x - R, e.pos.y - R, e.pos.x + R, e.pos.y + R)) {
+      if (e.state === 'launching' && sg.pad === e.pad) continue;
+      const c = closestPointSegment(e.pos, sg.a, sg.b);
+      const dd = dist(e.pos, c);
+      if (dd < R && dd > 0.01) {
+        const k = (R - dd) / R;
+        want = add(want, scale(sub(e.pos, c), (k * k * V * 1.8) / dd));
+      }
+    }
+    // don't ram the player (a collision kills you both): keep a little personal space
+    const toMe = sub(e.pos, this.heli.pos);
+    const md = len(toMe);
+    if (this.alive && md > 0.01) {
+      const space = 210;
+      if (md < space) want = add(want, scale(toMe, (((space - md) / space) * V * 3) / md));
+      // closing fast? brake early enough to stop before contact
+      const closing = -dot(sub(e.vel, this.heli.vel), toMe) / md;
+      const stopDist = (closing * closing) / (2 * cfg.enemyHeliAccel) + 90;
+      if (closing > 0 && md < stopDist) want = add(want, scale(toMe, (closing * 2) / md));
+    }
+    // brake if the way ahead is blocked within stopping distance
+    const sp = len(e.vel);
+    if (sp > 20) {
+      const stop = (sp * sp) / (2 * cfg.enemyHeliAccel) + 30;
+      const ahead = add(e.pos, scale(e.vel, stop / sp));
+      if (!this.clearPath(e.pos, ahead, 22)) want = add(scale(want, 0.5), scale(e.vel, -0.8));
+    }
+    const wl = len(want);
+    if (wl > V * 1.25) want = scale(want, (V * 1.25) / wl);
+    const dv = sub(want, e.vel);
+    const dl = len(dv);
+    const maxDv = cfg.enemyHeliAccel * dt;
+    e.vel = dl > maxDv ? add(e.vel, scale(dv, maxDv / dl)) : want;
+    e.pos = add(e.pos, scale(e.vel, dt));
+    // hard safety: never let the hull touch rock. Slide along it instead (kill the inward velocity).
+    const keep = 36;
+    for (const sg of segmentsNear(this.level, e.pos.x - keep, e.pos.y - keep, e.pos.x + keep, e.pos.y + keep)) {
+      if (e.state === 'launching' && sg.pad === e.pad) continue;
+      const c = closestPointSegment(e.pos, sg.a, sg.b);
+      const dd = dist(e.pos, c);
+      if (dd >= keep || dd < 0.01) continue;
+      const n = scale(sub(e.pos, c), 1 / dd);
+      e.pos = add(c, scale(n, keep));
+      const vn = dot(e.vel, n);
+      if (vn < 0) e.vel = sub(e.vel, scale(n, vn));
+    }
+  }
+
+  /**
+   * The solid surface nearest p (within 40): the closest point on it, and its normal pointing out
+   * into open air. `hint` breaks ties for thin features where both sides are open.
+   */
+  private surfaceAt(p: Vec, hint: Vec): { pos: Vec; normal: Vec } | null {
+    let best: { pos: Vec; normal: Vec; d: number } | null = null;
+    for (const sg of segmentsNear(this.level, p.x - 40, p.y - 40, p.x + 40, p.y + 40)) {
+      if (sg.gate !== undefined) continue;
+      const c = closestPointSegment(p, sg.a, sg.b);
+      const dd = dist(p, c);
+      if (best && dd >= best.d) continue;
+      const t = sub(sg.b, sg.a);
+      const tl = len(t);
+      if (tl < 1) continue;
+      let n = { x: -t.y / tl, y: t.x / tl };
+      const outA = !this.solidAt(add(c, scale(n, 5)));
+      const outB = !this.solidAt(add(c, scale(n, -5)));
+      if (outA === outB ? dot(n, hint) < 0 : !outA) n = { x: -n.x, y: -n.y };
+      best = { pos: c, normal: n, d: dd };
+    }
+    return best && best.d <= 40 ? { pos: best.pos, normal: best.normal } : null;
+  }
+
+  /** Inside rock, or inside a pad. */
+  private solidAt(p: Vec): boolean {
+    if (this.insideRock(p)) return true;
+    return this.level.data.pads.some((pd) => p.x >= pd.x && p.x <= pd.x + pd.w && p.y >= pd.y && p.y <= pd.y + 20);
+  }
+
+  /** Distance from p to the nearest solid edge (capped). */
+  clearance(p: Vec, cap = 200): number {
+    if (this.insideRock(p)) return 0;
+    let best = cap;
+    for (const sg of segmentsNear(this.level, p.x - cap, p.y - cap, p.x + cap, p.y + cap)) best = Math.min(best, distPointSegment(p, sg.a, sg.b));
+    return best;
+  }
+
+  private insideRock(p: Vec): boolean {
+    for (const pts of this.level.polygons) {
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const a = pts[i];
+        const b = pts[j];
+        if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      if (inside) return true;
+    }
+    return false;
+  }
+
+  /** True if a body of radius r can travel straight from a to b without touching anything solid. */
+  clearPath(a: Vec, b: Vec, r: number): boolean {
+    for (const sg of segmentsNear(this.level, Math.min(a.x, b.x) - r, Math.min(a.y, b.y) - r, Math.max(a.x, b.x) + r, Math.max(a.y, b.y) + r)) {
+      if (segmentsIntersect(a, b, sg.a, sg.b)) return false;
+      if (distPointSegment(sg.a, a, b) < r || distPointSegment(sg.b, a, b) < r || distPointSegment(a, sg.a, sg.b) < r || distPointSegment(b, sg.a, sg.b) < r) return false;
+    }
+    return true;
+  }
+
+  // nav grid: open-air cells with room for a guard; built once per level
+  private nav: { cell: number; x0: number; y0: number; cols: number; rows: number; free: Uint8Array } | null = null;
+
+  private buildNav(): void {
+    const cell = 40;
+    const x0 = 0;
+    const y0 = -600;
+    const maxY = Math.max(...this.level.polygons.flat().map((p) => p.y));
+    const cols = Math.ceil(this.level.data.width / cell);
+    const rows = Math.ceil((maxY - y0) / cell);
+    const free = new Uint8Array(cols * rows);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const p = { x: x0 + (c + 0.5) * cell, y: y0 + (r + 0.5) * cell };
+        free[r * cols + c] = this.clearance(p, 60) >= 38 ? 1 : 0;
+      }
+    }
+    this.nav = { cell, x0, y0, cols, rows, free };
+  }
+
+  /** Breadth-first route over the nav grid from `from` to (the open cell nearest) `to`. */
+  navPath(from: Vec, to: Vec): Vec[] {
+    if (!this.nav) this.buildNav();
+    const n = this.nav!;
+    const idx = (p: Vec) => {
+      const c = Math.max(0, Math.min(n.cols - 1, Math.floor((p.x - n.x0) / n.cell)));
+      const r = Math.max(0, Math.min(n.rows - 1, Math.floor((p.y - n.y0) / n.cell)));
+      return r * n.cols + c;
+    };
+    const centre = (i: number) => ({ x: n.x0 + ((i % n.cols) + 0.5) * n.cell, y: n.y0 + (Math.floor(i / n.cols) + 0.5) * n.cell });
+    // nearest open cell to a point (small spiral search)
+    const nearestFree = (p: Vec) => {
+      const i0 = idx(p);
+      if (n.free[i0]) return i0;
+      const c0 = i0 % n.cols;
+      const r0 = Math.floor(i0 / n.cols);
+      for (let rad = 1; rad < 6; rad++) {
+        for (let dr = -rad; dr <= rad; dr++) {
+          for (let dc = -rad; dc <= rad; dc++) {
+            const c = c0 + dc;
+            const r = r0 + dr;
+            if (c < 0 || r < 0 || c >= n.cols || r >= n.rows) continue;
+            if (n.free[r * n.cols + c]) return r * n.cols + c;
+          }
+        }
+      }
+      return -1;
+    };
+    const start = nearestFree(from);
+    const goal = nearestFree(to);
+    if (start < 0 || goal < 0) return [];
+    const prev = new Int32Array(n.cols * n.rows).fill(-1);
+    prev[start] = start;
+    const queue = [start];
+    for (let q = 0; q < queue.length; q++) {
+      const i = queue[q];
+      if (i === goal) break;
+      const c = i % n.cols;
+      const r = Math.floor(i / n.cols);
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        const cc = c + dc;
+        const rr = r + dr;
+        if (cc < 0 || rr < 0 || cc >= n.cols || rr >= n.rows) continue;
+        const j = rr * n.cols + cc;
+        if (!n.free[j] || prev[j] >= 0) continue;
+        if (dc && dr && (!n.free[r * n.cols + cc] || !n.free[rr * n.cols + c])) continue; // no corner cutting
+        prev[j] = i;
+        queue.push(j);
+      }
+    }
+    if (prev[goal] < 0) return [];
+    const out: Vec[] = [];
+    for (let i = goal; i !== start; i = prev[i]) out.push(centre(i));
+    out.reverse();
+    if (out.length) out[out.length - 1] = to;
+    return out;
   }
 
   destroyEnemy(e: EnemyHeli): void {

@@ -62,11 +62,14 @@ export const DEFAULTS = {
   turretArcDeg: 80, // how far from straight-out they can aim
 
   // Enemies: guard helicopters (launch from rescue pads)
-  enemyHeliSpeed: 200,
-  enemyHeliAccel: 260,
+  enemyHeliSpeed: 330,
+  enemyHeliAccel: 700,
   enemyDetect: 1500, // how close you must come (with line of sight) before a guard launches
-  enemyStandoff: 300, // preferred distance to hover from you while attacking
-  enemyLeash: 1100, // won't stray further than this from its pad
+  enemyStandoff: 240, // preferred distance to hover from you while attacking
+  enemyLeash: 1800, // won't stray further than this from its pad
+  enemyChase: 7, // seconds it keeps hunting you out of sight, tracking you through the caves
+  enemyBurst: 2, // shots per volley
+  enemyLead: 0.65, // 0 = aims where you are, 1 = where you'll be
   enemyFireRange: 560,
   enemyFireInterval: 0.9,
   enemyCharge: 0.7, // telegraph glow before each shot
@@ -91,6 +94,9 @@ export const DEFAULTS = {
 
 export type Config = typeof DEFAULTS;
 
+/** [version, keys reset to their new defaults]. Append when a default change must override saved tuning. */
+const MIGRATIONS: [number, (keyof Config)[]][] = [[1, ['enemyHeliSpeed', 'enemyHeliAccel', 'enemyStandoff', 'enemyLeash']]];
+
 const STORAGE_KEY = 'thrustlifter.config.v2'; // bump when defaults change meaningfully
 
 function load(): Config {
@@ -98,11 +104,23 @@ function load(): Config {
   try {
     if (typeof localStorage === 'undefined') return cfg;
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return cfg;
+    if (!raw) {
+      // fresh start: nothing to migrate, now or for these versions later
+      localStorage.setItem(STORAGE_KEY + '.migration', String(MIGRATIONS[MIGRATIONS.length - 1][0]));
+      return cfg;
+    }
     const saved = JSON.parse(raw) as Partial<Config>;
     for (const k of Object.keys(DEFAULTS) as (keyof Config)[]) {
       if (typeof saved[k] === 'number' && Number.isFinite(saved[k])) cfg[k] = saved[k] as number;
     }
+    // one-time migrations: when defaults are deliberately changed, push those keys past saved values
+    const done = Number(localStorage.getItem(STORAGE_KEY + '.migration') ?? 0);
+    for (const [version, keys] of MIGRATIONS) {
+      if (version <= done) continue;
+      for (const k of keys) cfg[k] = DEFAULTS[k];
+    }
+    localStorage.setItem(STORAGE_KEY + '.migration', String(MIGRATIONS[MIGRATIONS.length - 1][0]));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
   } catch {
     /* ignore corrupt storage */
   }

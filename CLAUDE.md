@@ -6,6 +6,14 @@ first: it records decisions the owner has made. Don't silently change them; rais
 The owner directs design and playtests but does not read or edit code. Explain changes in
 terms of how the game plays, not implementation.
 
+## How we work (owner preferences)
+- **I run the dev server**, in the background: `npx vite --port 5173 --strictPort`, then give the owner http://localhost:5173. Check first whether one is already running (`ps aux | grep "[v]ite --port 5173"`). Vite hot-reloads, so edits show up live.
+- **Tuning:** the owner tunes with the in-game panel (T) and pastes the "copy settings JSON". Bake the values into `DEFAULTS` in `src/config.ts` and report what changed in a table. The browser saves *all* tuning values, so when you deliberately change a default the owner already has saved, add an entry to `MIGRATIONS` in `config.ts` or the change won't reach them.
+- **Verify, don't guess:** run `npm test` and `npx tsc --noEmit` after changes, and look at screenshots (`npm run shots`, or a small playwright script in the scratchpad) for anything visual. You can't hear audio, so measure sound levels in the browser and say so.
+- **Commit and push only when asked** (remote: github.com/bparrish99/thrustlifter, branch `main`; commits use the owner's GitHub no-reply email).
+- **Show, don't tell:** no text on level elements; minimal centre messages (see DESIGN.md).
+- Keep `DESIGN.md` current with every decision, including what was tried and rejected.
+
 ## Commands
 - `npm run dev`: play at http://localhost:5173
 - `npm test`: vitest (physics + game-rule tests)
@@ -19,7 +27,13 @@ terms of how the game plays, not implementation.
 - `src/game.ts`: game state and rules: collision, landing, pickup, delivery, weapons, particles. Fixed 240 Hz substeps.
 - `src/render.ts`: all drawing (faux-vector glow). No game logic.
 - `src/input.ts`: keyboard + gamepad → `FrameInput`
-- `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates); play order in `src/levels/index.ts`. Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
+- `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates, tanks, balloons, survivors, checkpoints); play order in `src/levels/order.json` (index.ts globs the folder). Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
+- `src/editor/`: in-game level editor (E). `tools.ts` = pure helpers (snapping, validation, JSON formatting, tight-spot analysis, tested); `editor.ts` = UI. `vite.config.ts` adds the dev-only `POST /__editor/save` endpoint that writes level files.
 - `src/audio.ts`: procedural rotor sound and event sound effects (game pushes `GameEvent`s; `main.ts` drains them each frame)
+
+## Where things stand
+- Milestones and open questions: see `DESIGN.md`. Two levels exist (Proving Ground, Deep Caverns); the level editor (E in game) can make more.
+- Recently added: guard AI with nav-grid pathfinding (`navPath`, `steerGuard`, `attackPoint` in game.ts); turrets auto-align to any surface (`surfaceAt`).
+- Likely next: more levels via the editor, flying-enemy variety, upgrades (e.g. triple shot), polish from playtesting.
 
 Conventions: y points down; tilt > 0 = rotor tilted right; `window.game` is exposed for console poking and the screenshot script.

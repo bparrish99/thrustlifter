@@ -126,6 +126,47 @@ export class Renderer {
 
   // -------------------------------------------------------------- frame
 
+  /** Editor camera: when set, the view is fixed here instead of following the heli. */
+  camOverride: { x: number; y: number; viewHeight: number } | null = null;
+  showHud = true;
+
+  /** World units per screen pixel scale for the current view. */
+  get viewScale(): number {
+    return this.h / (this.camOverride?.viewHeight ?? config.viewHeight);
+  }
+
+  screenToWorld(sx: number, sy: number): Vec {
+    const s = this.viewScale;
+    return { x: (sx - this.w / 2) / s + this.cam.x, y: (sy - this.h / 2) / s + this.cam.y };
+  }
+
+  worldToScreen(p: Vec): Vec {
+    const s = this.viewScale;
+    return { x: (p.x - this.cam.x) * s + this.w / 2, y: (p.y - this.cam.y) * s + this.h / 2 };
+  }
+
+  /** Run `fn` with the context in world coordinates (for editor overlays). */
+  withWorld(fn: (ctx: CanvasRenderingContext2D, scale: number) => void): void {
+    const ctx = this.ctx;
+    const s = this.viewScale;
+    ctx.save();
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.translate(this.w / 2, this.h / 2);
+    ctx.scale(s, s);
+    ctx.translate(-this.cam.x, -this.cam.y);
+    fn(ctx, s);
+    ctx.restore();
+  }
+
+  /** Run `fn` with the context in CSS-pixel screen coordinates. */
+  withScreen(fn: (ctx: CanvasRenderingContext2D, w: number, h: number) => void): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    fn(ctx, this.w, this.h);
+    ctx.restore();
+  }
+
   render(game: Game, dt: number): void {
     this.clock += dt;
     this.frameDt = dt;
@@ -136,8 +177,14 @@ export class Renderer {
       this.cam.init = false;
       this.groundY = null;
     }
-    const scale = (this.h / config.viewHeight) * 1;
-    this.updateCamera(game, dt, scale);
+    const scale = this.viewScale;
+    if (this.camOverride) {
+      this.cam.x = this.camOverride.x;
+      this.cam.y = this.camOverride.y;
+      this.cam.init = true;
+    } else {
+      this.updateCamera(game, dt, scale);
+    }
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
@@ -216,7 +263,7 @@ export class Renderer {
     ctx.globalAlpha = 1;
     if (this.overlay) ctx.drawImage(this.overlay, 0, 0);
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    this.drawHud(game);
+    if (this.showHud) this.drawHud(game);
   }
 
   private updateCamera(game: Game, dt: number, scale: number): void {

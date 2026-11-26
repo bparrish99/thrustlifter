@@ -43,7 +43,8 @@ export interface LevelData {
   startFuelMin?: number;
   /** Below this y, empty space shows a dark cave backdrop instead of sky. */
   backdropY?: number;
-  /** Turrets sit at (x,y) on a surface. dir = direction they face in degrees (-90 = up, 90 = hanging from a ceiling). */
+  /** Turrets sit at (x,y) on any surface and align to it automatically (floor, slope, wall, ceiling, pad top).
+   *  dir (degrees, -90 = up) is only a hint for which side of a thin surface they're on. */
   turrets: { x: number; y: number; dir?: number }[];
 }
 

@@ -1004,3 +1004,81 @@ describe('level progression', () => {
     expect(g.readyForNext).toBe(false);
   });
 });
+
+describe('smarter guards', () => {
+  // Deep Caverns orb-chamber guard (pad x 1150..1260 at y 1440) hunting a heli that moves around the cave.
+  const caveGame = () => {
+    const g = new Game(LEVELS[1]);
+    g.turrets.forEach((t) => (t.alive = false));
+    g.balloons = [];
+    g.update(idle, 1 / 60); // guards appear on their pads while you're still far away on the launch pad
+    g.heli.landed = false;
+    g.onLaunchPad = false;
+    return g;
+  };
+  const park = (g: Game, x: number, y: number, seconds: number, shield = true) => {
+    for (let i = 0; i < seconds * 60 && g.phase === 'playing'; i++) {
+      g.heli.pos = { x, y };
+      g.heli.vel = { x: 0, y: 0 };
+      g.fuel = 100;
+      g.update({ ...idle, pickup: shield, pickupPressed: shield && i === 0 }, 1 / 60);
+    }
+  };
+
+  it('a hunting guard never flies into the cave walls', () => {
+    const g = caveGame();
+    // wake it from the chamber, then lead it around the cave
+    const route: [number, number, number][] = [[900, 1250, 4], [1300, 1260, 3], [1600, 1250, 3], [2025, 1260, 3], [2025, 1700, 4], [2600, 1800, 4]];
+    let lost = 0;
+    for (const [x, y, s] of route) {
+      park(g, x, y, s);
+      if (g.enemies.length === 0) lost++;
+    }
+    expect(g.events.filter((e) => e.type === 'turretDown').length).toBe(0); // no guard wrecks
+    expect(lost).toBe(0);
+  });
+
+  it('routes around rock to chase you out of sight (follows you down the drop shaft)', () => {
+    const g = caveGame();
+    park(g, 1300, 1260, 4); // wake it, it hunts in the upper passage
+    expect(g.enemies[0].state).toBe('hunting');
+    park(g, 2025, 1780, 6); // duck down the drop shaft, out of its sight
+    const e = g.enemies[0];
+    expect(e).toBeDefined();
+    expect(e.pos.y).toBeGreaterThan(1350); // it came down after you
+  });
+
+  it('builds a nav route through the caverns from the orb chamber to the bowl chamber', () => {
+    const g = caveGame();
+    const path = g.navPath({ x: 1000, y: 1250 }, { x: 3800, y: 1950 });
+    expect(path.length).toBeGreaterThan(20);
+    for (const p of path) expect(g.clearance(p)).toBeGreaterThan(30);
+  });
+});
+
+describe('turret mounting', () => {
+  const base = LEVELS[0];
+  const withTurret = (x: number, y: number, dir?: number) => new Game({ ...base, turrets: [{ x, y, dir }] });
+
+  it('aligns to a slope', () => {
+    // Proving Ground slope from (980,610) down to (1080,650): turret dropped on it with no direction
+    const g = withTurret(1030, 630);
+    const n = g.turrets[0].normal;
+    const t = { x: 100, y: 40 };
+    expect(Math.abs(n.x * t.x + n.y * t.y)).toBeLessThan(1e-6); // perpendicular to the slope
+    expect(n.y).toBeLessThan(0); // facing up out of the ground
+  });
+
+  it('aligns to a wall and a ceiling, ignoring a wrong direction hint', () => {
+    const wall = withTurret(130, 300, -90); // left cliff face, hint says "up"
+    expect(wall.turrets[0].normal.x).toBeGreaterThan(0.9);
+    const roof = withTurret(2700, 505, -90); // underside of the floating rock
+    expect(roof.turrets[0].normal.y).toBeGreaterThan(0.5);
+  });
+
+  it('sits on a pad top', () => {
+    const pad = base.pads[0];
+    const g = withTurret(pad.x + 40, pad.y);
+    expect(g.turrets[0].normal.y).toBeLessThan(-0.99);
+  });
+});
