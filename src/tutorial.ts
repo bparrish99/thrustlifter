@@ -1,3 +1,4 @@
+import { controlLabel, lastDevice } from './bindings';
 import type { Game } from './game';
 import type { PadData } from './level';
 import type { Vec } from './math';
@@ -5,6 +6,7 @@ import type { Vec } from './math';
 /*
  * First-level tutorial: short hints that float above the thing they're about, the first time you
  * meet it. A deliberate exception to "show, don't tell" (see DESIGN.md), for level 1 only.
+ * Hints name the player's own controls (bindings.ts), as gamepad buttons if they last used a pad.
  * Each hint runs on its own, whatever else is showing: it appears whenever its situation applies, stays
  * until you've done what it says (or for a few seconds), then never again on that run of the level.
  * While you're close enough to do it, it fades out of the way so you can see what you're doing.
@@ -62,14 +64,14 @@ function nearest<T>(g: Game, items: T[], pos: (t: T) => Vec, k = 1): Vec | null 
 export const TIPS: TipDef[] = [
   {
     id: 'liftoff',
-    lines: ['HOLD ↑ TO LIFT OFF', '← → TO TILT'],
+    lines: () => [`HOLD ${controlLabel('rotor')} TO LIFT OFF`, lastDevice.kind === 'pad' ? 'LEFT STICK TO TILT' : `${controlLabel('left')} ${controlLabel('right')} TO TILT`],
     anchor: (g) => (g.onLaunchPad && g.heli.landed ? { world: g.heli.pos, lift: 80 } : null),
     done: (g) => !g.onLaunchPad,
     maxTime: 1e9,
   },
   {
     id: 'fuel',
-    lines: ['HOVER OVER A FUEL TANK', 'HOLD SPACE TO REFUEL'],
+    lines: () => ['HOVER OVER A FUEL TANK', `HOLD ${controlLabel('beam')} TO REFUEL`],
     anchor: (g) => {
       // only when there's room in your tank (5% or more) (Space does nothing over a tank when you're full)
       if (g.orb.attached || g.fuel > g.cfg.fuelMax * 0.95) return null;
@@ -88,7 +90,7 @@ export const TIPS: TipDef[] = [
   },
   {
     id: 'orb',
-    lines: ['HOVER OVER THE ORB', 'HOLD SPACE TO TETHER IT'],
+    lines: () => ['HOVER OVER THE ORB', `HOLD ${controlLabel('beam')} TO TETHER IT`],
     anchor: (g) => (!g.orb.attached && !g.orb.delivered && !g.orb.free && near(g, g.orb.pos) ? { world: g.orb.pos, lift: 60 } : null),
     done: (g) => g.orb.attached,
     close: (g) => g.orbInReach(),
@@ -96,7 +98,7 @@ export const TIPS: TipDef[] = [
   },
   {
     id: 'bowl',
-    lines: ['LOWER THE ORB IN', 'TAP SPACE TO LET GO'],
+    lines: () => ['LOWER THE ORB IN', `TAP ${controlLabel('beam')} TO LET GO`],
     anchor: (g) => {
       const b = g.level.data.bowl;
       return g.orb.attached && near(g, b, 1.3) ? { world: b, lift: 70 } : null;
@@ -135,7 +137,7 @@ export const TIPS: TipDef[] = [
   },
   {
     id: 'fight',
-    lines: ['Z TO FIRE · X TO TURN AROUND', 'HOLD SPACE FOR A SHIELD'],
+    lines: () => [`${controlLabel('fire')} TO FIRE · ${controlLabel('flip')} TO TURN AROUND`, `HOLD ${controlLabel('beam')} FOR A SHIELD`],
     anchor: (g) => {
       if (!g.exposed) return null;
       const p =

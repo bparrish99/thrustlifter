@@ -14,6 +14,10 @@ terms of how the game plays, not implementation.
 - **Show, don't tell:** no text on level elements; minimal centre messages (see DESIGN.md). The one exception is the level-1 tutorial hints.
 - Keep `DESIGN.md` current with every decision, including what was tried and rejected.
 
+## Builds
+- Dev server: everything, including the editor (E), tuning (T), level jumps (1-9). `?play` skips the front page (screenshot scripts use it).
+- `npm run build` → `dist/`: the public build, **no editor/tuning/jumps** (gated on `import.meta.env.DEV`). The owner deploys it to Netlify (`netlify.toml`).
+
 ## Commands
 - `npm run dev`: play at http://localhost:5173
 - `npm test`: vitest (physics + game-rule tests)
@@ -26,7 +30,8 @@ terms of how the game plays, not implementation.
 - `src/physics.ts`: heli geometry, controls, integration, rigid rod constraint (pure, tested)
 - `src/game.ts`: game state and rules: collision, landing, pickup, delivery, weapons, particles. Fixed 240 Hz substeps.
 - `src/render.ts`: all drawing (faux-vector glow). No game logic.
-- `src/input.ts`: keyboard + gamepad → `FrameInput`
+- `src/input.ts`: keyboard + gamepad → `FrameInput`, using the remappable `src/bindings.ts` (actions, defaults, saved bindings, key/button names, `controlLabel` for hints)
+- `src/menu.ts`: front page (PLAY, starting-level picker, CONTROLS) and the Controls/remapping screen, an HTML overlay
 - `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates, tanks, balloons, survivors, checkpoints); play order in `src/levels/order.json` (index.ts globs the folder; files not in order.json are "shelved": kept and editable, not played). Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
 - `src/editor/`: in-game level editor (E). `tools.ts` = pure helpers (snapping, validation, JSON formatting, tight-spot analysis, tested); `editor.ts` = UI. `vite.config.ts` adds dev-only endpoints: `POST /__editor/save` writes level files, `POST /__editor/order` rewrites the play order.
 - `src/minimap.ts`: which part of a level the minimap frames (drawn by `drawMinimap` in render.ts)

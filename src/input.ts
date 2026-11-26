@@ -1,15 +1,14 @@
 import type { FrameInput } from './game';
 
+import { bindings, lastDevice, type Action } from './bindings';
+
 /*
- * Keyboard (two layouts work at once):
- *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z fire, X flip
- *   WASD:   A/D tilt, W rotor, S dive   with  J fire, K flip
- *   Space   hold = shield + tether beam; tap while carrying the orb = release (no shield while carrying)
- *   R restart · P/Esc/Tab pause · T tuning panel · M mute · E level editor · N next level (after completing) · 1-9 jump to level
- *
- * Gamepad (standard mapping):
- *   Left stick X tilt · RT (analog) or A rotor · LT (analog) or stick down dive · X/RB fire · B or Y flip
- *   LB tether · Start restart · Back pause
+ * Reads keyboard + gamepad each frame using the player's bindings (see bindings.ts; remappable on
+ * the Controls screen). Defaults: arrows or WASD fly, Z/J fire, X/K turn around, Space = tether /
+ * refuel / shield (tap while carrying to drop the orb), Esc/P pause, R restart, M mute.
+ * Gamepad: left stick tilts (and dives when pushed down), RT thrust, LT dive, A tether, X fire,
+ * B turn around, Start pause, Select (Back) restart.
+ * Dev-only extras (fixed): T tuning panel, E level editor, N next level, 1-9 jump to a level.
  */
 
 const DEADZONE = 0.18;
@@ -28,38 +27,56 @@ export class Input {
   private down = new Set<string>();
   private pressed = new Set<string>();
   private prevPad: boolean[] = [];
+  /** While the Controls screen is listening for a key, the game ignores the keyboard. */
+  suspended = false;
 
   constructor(target: Window) {
     target.addEventListener('keydown', (e) => {
-      if (isTextField(e.target)) return;
+      if (isTextField(e.target) || this.suspended) return;
+      lastDevice.kind = 'keys';
       if (!e.repeat) this.pressed.add(e.code);
       this.down.add(e.code);
-      if (e.code.startsWith('Arrow') || e.code === 'Space' || e.code === 'Tab') e.preventDefault(); // Tab pauses instead of moving focus
+      // keep bound keys (and arrows/space/tab) from scrolling the page or moving focus
+      if (e.code.startsWith('Arrow') || e.code === 'Space' || e.code === 'Tab' || isBound(e.code)) e.preventDefault();
     });
     target.addEventListener('keyup', (e) => this.down.delete(e.code));
     target.addEventListener('blur', () => this.down.clear());
   }
 
-  private k(...codes: string[]): boolean {
-    return codes.some((c) => this.down.has(c));
+  /** Held: any of the action's keys. */
+  private held(a: Action): boolean {
+    return bindings[a].keys.some((c) => c && this.down.has(c));
+  }
+
+  /** Just pressed this frame: any of the action's keys. */
+  private hit(a: Action): boolean {
+    return bindings[a].keys.some((c) => c && this.pressed.has(c));
   }
 
   private p(...codes: string[]): boolean {
     return codes.some((c) => this.pressed.has(c));
   }
 
+  /** Drop any keys pressed so far (e.g. the key that started the game shouldn't also fire). */
+  flush(): void {
+    this.pressed.clear();
+    this.down.clear();
+    const pad = firstGamepad();
+    this.prevPad = pad ? pad.buttons.map((x) => x.pressed) : [];
+  }
+
   poll(): { game: FrameInput; meta: MetaInput } {
-    let tiltAxis = (this.k('ArrowRight', 'KeyD') ? 1 : 0) - (this.k('ArrowLeft', 'KeyA') ? 1 : 0);
-    let rotor = this.k('ArrowUp', 'KeyW') ? 1 : 0;
-    let dive = this.k('ArrowDown', 'KeyS') ? 1 : 0;
-    let fire = this.k('KeyZ', 'KeyJ');
-    let flip = this.p('KeyX', 'KeyK', 'KeyC', 'KeyL');
-    let pickup = this.k('Space');
-    let pickupPressed = this.p('Space');
-    let restart = this.p('KeyR');
-    let pause = this.p('KeyP', 'Escape', 'Tab');
+    let tiltAxis = (this.held('right') ? 1 : 0) - (this.held('left') ? 1 : 0);
+    let rotor = this.held('rotor') ? 1 : 0;
+    let dive = this.held('dive') ? 1 : 0;
+    let fire = this.held('fire');
+    let flip = this.hit('flip');
+    let pickup = this.held('beam');
+    let pickupPressed = this.hit('beam');
+    let restart = this.hit('restart');
+    let pause = this.hit('pause') || this.p('Tab');
+    let toggleMute = this.hit('mute');
     const toggleTuning = this.p('KeyT', 'Backquote');
-    const toggleMute = this.p('KeyM');
     const toggleEditor = this.p('KeyE');
     const nextLevel = this.p('KeyN');
     let jumpLevel = -1;
@@ -67,19 +84,27 @@ export class Input {
 
     const pad = firstGamepad();
     if (pad) {
-      const b = (i: number) => !!pad.buttons[i]?.pressed;
-      const edge = (i: number) => b(i) && !this.prevPad[i];
+      const pressedNow = (i: number) => i >= 0 && !!pad.buttons[i]?.pressed;
+      const value = (i: number) => (i >= 0 ? (pad.buttons[i]?.value ?? 0) : 0);
+      const edge = (i: number) => pressedNow(i) && !this.prevPad[i];
+      const pb = (a: Action) => bindings[a].pad;
       const ax = pad.axes[0] ?? 0;
-      if (Math.abs(ax) > DEADZONE) tiltAxis += Math.sign(ax) * ((Math.abs(ax) - DEADZONE) / (1 - DEADZONE));
-      rotor = Math.max(rotor, pad.buttons[7]?.value ?? 0, b(0) ? 1 : 0);
       const ay = pad.axes[1] ?? 0;
-      dive = Math.max(dive, pad.buttons[6]?.value ?? 0, ay > DEADZONE ? (ay - DEADZONE) / (1 - DEADZONE) : 0);
-      fire ||= b(2) || b(5);
-      flip ||= edge(3) || edge(1);
-      pickup ||= b(4);
-      pickupPressed ||= edge(4);
-      restart ||= edge(9);
-      pause ||= edge(8);
+      const stick = Math.abs(ax) > DEADZONE ? Math.sign(ax) * ((Math.abs(ax) - DEADZONE) / (1 - DEADZONE)) : 0;
+      const stickDown = ay > DEADZONE ? (ay - DEADZONE) / (1 - DEADZONE) : 0;
+      const padTilt = stick + (pressedNow(pb('right')) ? 1 : 0) - (pressedNow(pb('left')) ? 1 : 0);
+      const used = Math.abs(stick) > 0 || stickDown > 0 || pad.buttons.some((x) => x.pressed);
+      if (used) lastDevice.kind = 'pad';
+      tiltAxis += padTilt;
+      rotor = Math.max(rotor, value(pb('rotor')));
+      dive = Math.max(dive, value(pb('dive')), stickDown);
+      fire ||= pressedNow(pb('fire'));
+      flip ||= edge(pb('flip'));
+      pickup ||= pressedNow(pb('beam'));
+      pickupPressed ||= edge(pb('beam'));
+      restart ||= edge(pb('restart'));
+      pause ||= edge(pb('pause'));
+      toggleMute ||= edge(pb('mute'));
       this.prevPad = pad.buttons.map((x) => x.pressed);
     }
 
@@ -92,7 +117,11 @@ export class Input {
   }
 }
 
-function firstGamepad(): Gamepad | null {
+function isBound(code: string): boolean {
+  return Object.values(bindings).some((b) => b.keys.includes(code));
+}
+
+export function firstGamepad(): Gamepad | null {
   if (typeof navigator === 'undefined' || !navigator.getGamepads) return null;
   for (const g of navigator.getGamepads()) if (g && g.connected) return g;
   return null;

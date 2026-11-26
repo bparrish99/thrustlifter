@@ -25,7 +25,7 @@ const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-await page.goto('http://localhost:5199/');
+await page.goto('http://localhost:5199/?play');
 await page.waitForTimeout(800);
 await page.screenshot({ path: 'shots/1-start.png' });
 

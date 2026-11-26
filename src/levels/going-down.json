@@ -5,9 +5,18 @@
   "startFuelMin": 50,
   "checkpoints": [
     {
+      "x": 910,
+      "y": 630,
+      "fuel": 40
+    },
+    {
       "x": 2050,
-      "y": 1710,
-      "after": "delivery",
+      "y": 1690,
+      "fuel": 40
+    },
+    {
+      "x": 1010,
+      "y": 1760,
       "fuel": 40
     }
   ],

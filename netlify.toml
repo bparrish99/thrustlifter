@@ -1,0 +1,10 @@
+# Netlify: builds the game (type check + vite build) and serves the static files in dist/.
+# The deployed build has no level editor or tuning panel (those are dev-server only).
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # the screenshot tooling (playwright) isn't needed to build the game
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"

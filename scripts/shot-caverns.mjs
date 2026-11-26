@@ -23,7 +23,7 @@ const browser = await chromium.launch({ executablePath: findChrome() });
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
-await page.goto('http://localhost:5198/');
+await page.goto('http://localhost:5198/?play');
 await page.waitForTimeout(500);
 await page.keyboard.press('Digit2');
 await page.keyboard.press('KeyH');
