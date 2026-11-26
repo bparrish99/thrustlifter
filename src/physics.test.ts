@@ -977,3 +977,30 @@ describe('after mission complete', () => {
     expect(g.projectiles.filter((p) => p.kind === 'enemy').length).toBe(0);
   });
 });
+
+describe('level progression', () => {
+  it('after the results pause, the game asks for the next level', () => {
+    const g = new Game(LEVELS[0], { levelNumber: 1, hasNextLevel: true });
+    g.orb.delivered = true;
+    g.heli.landed = false;
+    g.onLaunchPad = false;
+    g.heli.pos = { x: 280, y: 830 };
+    g.heli.vel = { x: 0, y: 20 };
+    let doneAt = -1;
+    for (let i = 0; i < 30 * 60 && !g.readyForNext; i++) {
+      g.update(idle, 1 / 60);
+      if (doneAt < 0 && g.tally?.stage === 'done') doneAt = i;
+    }
+    expect(g.readyForNext).toBe(true);
+    expect(doneAt).toBeGreaterThan(0);
+  });
+
+  it('on the last level it stays on the results', () => {
+    const g = new Game(LEVELS[1], { levelNumber: 2, hasNextLevel: false });
+    g.orb.delivered = true;
+    g.completedAt = null;
+    (g as unknown as { complete(): void }).complete();
+    for (let i = 0; i < 20 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.readyForNext).toBe(false);
+  });
+});

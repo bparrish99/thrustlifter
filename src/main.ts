@@ -26,7 +26,12 @@ function frame(now: number): void {
   if (meta.pause) paused = !paused;
   if (meta.toggleTuning) tuning._hidden ? tuning.show() : tuning.hide();
   if (meta.toggleMute) sound.toggleMute();
-  const goTo = meta.jumpLevel >= 0 && meta.jumpLevel < LEVELS.length ? meta.jumpLevel : meta.nextLevel && game.phase === 'complete' && game.hasNextLevel ? levelIndex + 1 : -1;
+  const goTo =
+    meta.jumpLevel >= 0 && meta.jumpLevel < LEVELS.length
+      ? meta.jumpLevel
+      : (game.readyForNext || (meta.nextLevel && game.phase === 'complete')) && game.hasNextLevel
+        ? levelIndex + 1
+        : -1;
   if (goTo >= 0) {
     // N (next level) carries lives and score over; number-key jumps start fresh
     const carry = meta.jumpLevel < 0 ? { lives: game.lives, score: game.score } : undefined;

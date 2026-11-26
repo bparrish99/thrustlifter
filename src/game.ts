@@ -152,6 +152,8 @@ export interface Message {
 
 export type Phase = 'playing' | 'dead' | 'complete' | 'gameover';
 export const START_LIVES = 3;
+/** Seconds to linger on the mission-complete results before the next level starts. */
+export const ADVANCE_DELAY = 3;
 export const POINTS = { turret: 100, balloon: 200, guard: 300, rescue: 500, perTenthUnderTarget: 10, perFuelTick: 25 };
 /** LEDs on the fuel gauge (fuel bonus counts whole lit ticks). */
 export const FUEL_TICKS = 24;
@@ -222,6 +224,8 @@ export class Game {
   lastOrbLoss = '';
   completedAt: number | null = null;
   timeBonus = 0;
+  /** Set when the results have been shown long enough; main.ts then loads the next level. */
+  readyForNext = false;
   /** End-of-level bonus tally in progress (null until the level is complete). */
   tally: { stage: 'intro' | 'time' | 'pause' | 'fuel' | 'done'; t: number; tenths: number; tenthsTotal: number; ticks: number; ticksTotal: number; acc: number; sound: number } | null = null;
   /** Bonus time remaining (seconds). Starts at the level's target time, counts down from first lift-off, stops at zero. */
@@ -753,7 +757,13 @@ export class Game {
   /** End-of-level tally: drain the time bonus, then the fuel gauge tick by tick, into the score. */
   private stepTally(dt: number): void {
     const t = this.tally;
-    if (!t || t.stage === 'done') return;
+    if (!t) return;
+    if (t.stage === 'done') {
+      // after a pause on the results, move on to the next level automatically
+      t.t += dt;
+      if (t.t > ADVANCE_DELAY && this.hasNextLevel) this.readyForNext = true;
+      return;
+    }
     t.t += dt;
     if (t.stage === 'intro') {
       if (t.t > 1.2) Object.assign(t, { stage: t.tenths > 0 ? 'time' : 'fuel', t: 0 });
@@ -783,6 +793,7 @@ export class Game {
         if (t.ticks > 0) Object.assign(t, { stage: 'fuel', t: 0 });
         else {
           t.stage = 'done';
+          t.t = 0;
           this.finishTally();
         }
       }
@@ -798,6 +809,7 @@ export class Game {
       }
       if (t.ticks <= 0 && t.t > 0.5) {
         t.stage = 'done';
+        t.t = 0;
         this.finishTally();
       }
     }
@@ -805,7 +817,7 @@ export class Game {
 
   private finishTally(): void {
     const d = this.deaths === 1 ? '1 death' : `${this.deaths} deaths`;
-    const next = this.hasNextLevel ? 'N next level  ·  R retry' : 'all levels done  ·  R retry';
+    const next = this.hasNextLevel ? 'next level coming up' : 'all levels done  ·  R to play again';
     const n = this.survivors.length;
     const saved = this.survivors.filter((s) => s.state === 'rescued').length;
     const rescue = n ? `  ·  rescued ${saved}/${n}` : '';
