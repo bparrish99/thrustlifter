@@ -35,7 +35,7 @@ export const DEFAULTS = {
   // tanks holding Space; each survivor picked up adds a little. No refuel on death.
   fuelMax: 100,
   fuelBurn: 3.1, // per second at full throttle (dive burns the same)
-  shieldBurn: 16, // per second while the shield is up
+  shieldBurn: 12, // per second while the shield is up
   tankRate: 30, // fuel sucked per second from a tank
   tankAmount: 45, // fuel in a tank (levels can override per tank)
   tankReach: 170, // how far above a tank you can hover and still suck from it
@@ -62,12 +62,12 @@ export const DEFAULTS = {
   turretArcDeg: 80, // how far from straight-out they can aim
 
   // Enemies: guard helicopters (launch from rescue pads)
-  enemyHeliSpeed: 330,
-  enemyHeliAccel: 700,
-  enemyDetect: 1500, // how close you must come (with line of sight) before a guard launches
-  enemyStandoff: 240, // preferred distance to hover from you while attacking
-  enemyLeash: 1800, // won't stray further than this from its pad
-  enemyChase: 7, // seconds it keeps hunting you out of sight, tracking you through the caves
+  enemyHeliSpeed: 275,
+  enemyHeliAccel: 420,
+  enemyDetect: 1130, // how close you must come (with line of sight) before a guard launches
+  enemyStandoff: 500, // preferred distance to hover from you while attacking
+  enemyLeash: 1350, // won't stray further than this from its pad
+  enemyChase: 5, // seconds it keeps hunting you out of sight, tracking you through the caves
   enemyBurst: 2, // shots per volley
   enemyLead: 0.65, // 0 = aims where you are, 1 = where you'll be
   enemyFireRange: 560,
@@ -83,7 +83,7 @@ export const DEFAULTS = {
   balloonCharge: 0.8,
 
   // Camera / look
-  viewHeight: 890, // world units visible vertically
+  viewHeight: 1030, // world units visible vertically
   camLookahead: 0.35, // seconds of velocity lead
   camFollow: 4,
   camGround: 0.78, // where the ground below you is framed on screen (0.5 = middle, 0.9 = near the bottom); heli stays between 22% and 60% from the top

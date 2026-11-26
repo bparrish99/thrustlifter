@@ -12,7 +12,7 @@ describe('minimap', () => {
         expect(p.y, f).toBeGreaterThan(b.y0);
         expect(p.y, f).toBeLessThan(b.y1);
       }
-      expect(b.y0, f).toBeGreaterThan(-1200);
+      expect(b.y0, f).toBeGreaterThanOrEqual(-1200); // never above the level's top border (a level may use its full height)
     }
   });
 });

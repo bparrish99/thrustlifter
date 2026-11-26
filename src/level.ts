@@ -6,7 +6,7 @@ export interface PadData {
   w: number;
   /** start = launch/return pad; rescue = where survivors wait. Each pad gives a one-time fuel boost. */
   kind: 'start' | 'rescue';
-  /** Enemy helicopters guarding this pad (launch one at a time when you come near). */
+  /** How many enemy helicopters guard this pad (they launch one at a time when you come near; none come once its hostages are picked up). 0/absent = unguarded. */
   guards?: number;
   /** Guards stay parked (asleep) until this happens, e.g. so none attack during the orb carry. */
   guardsAfter?: 'delivery';
@@ -24,22 +24,25 @@ export interface LevelData {
   /** Orb bowl: centre x, and the ground y it sits on. */
   bowl: { x: number; y: number };
   /** Energy barriers. `opens: 'delivery'` starts closed and opens when the orb is delivered;
-   *  `closes: 'pickup'` starts open and seals when you first grab the orb. */
-  gates?: { poly: number[]; opens?: 'delivery'; closes?: 'pickup' }[];
+   *  `closes: 'pickup'` starts open and seals when you first grab the orb; `closes: 'delivery'`
+   *  starts open and seals when the orb is delivered. A sealing gate waits until you're clear of it. */
+  gates?: { poly: number[]; opens?: 'delivery'; closes?: 'pickup' | 'delivery' }[];
   /** Enemy balloons: drift around (x,y) within `patrol` (default from config) and shoot at you. */
   balloons?: { x: number; y: number; patrol?: number }[];
   /** Fuel tanks sitting on the ground at (x,y): hover over one and hold Space to suck it up. Shootable. */
   fuelTanks?: { x: number; y: number; amount?: number }[];
   /** Little people to rescue (optional bonus): feet at (x,y) on the ground, near a pad. */
   survivors?: { x: number; y: number }[];
-  /** Invisible respawn points (heli reappears hovering, held until you touch the controls).
-   *  `after: 'delivery'` applies once the orb is delivered. If a level has none, the game
-   *  uses a point above the bowl. */
-  checkpoints?: { x: number; y: number; after: 'delivery'; fuel?: number }[];
+  /** Invisible respawn points. When you die you come back at whichever respawn point (these, or the
+   *  launch pad) is closest to where you died, by flying distance; at a checkpoint you hover, held
+   *  until you touch the controls. `fuel` tops you up to that minimum there (no soft-locks).
+   *  (`after: 'delivery'` is a leftover from when there was one after-delivery checkpoint; it's ignored.)
+   *  If a level has none, a point above the bowl is used. */
+  checkpoints?: { x: number; y: number; fuel?: number; after?: 'delivery' }[];
   /** Target time in seconds: finishing under it earns POINTS.perTenthUnderTarget per tenth of a second. */
   targetTime?: number;
-  /** Minimum fuel when you respawn on the launch pad (before delivery). `checkpoints[].fuel` is the
-   *  same for each checkpoint. Size these so the next stretch is always possible: no soft-locks. */
+  /** Minimum fuel when you respawn on the launch pad. `checkpoints[].fuel` is the same for each
+   *  checkpoint. Size these so the next stretch is always possible: no soft-locks. */
   startFuelMin?: number;
   /** Below this y, empty space shows a dark cave backdrop instead of sky. */
   backdropY?: number;
@@ -75,8 +78,10 @@ export interface Bowl {
 export interface Gate {
   pts: Vec[];
   opens?: 'delivery';
-  closes?: 'pickup';
+  closes?: 'pickup' | 'delivery';
   open: boolean;
+  /** Due to seal, waiting for the heli and orb to be clear of it. */
+  sealPending?: boolean;
   /** Visual 0 = fully solid .. 1 = fully gone (animated by the game). */
   fade: number;
 }
@@ -200,6 +205,7 @@ export function resetGates(level: Level): void {
   for (const g of level.gates) {
     g.open = !!g.closes;
     g.fade = g.open ? 1 : 0;
+    g.sealPending = false;
   }
 }
 

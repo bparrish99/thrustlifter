@@ -1,6 +1,6 @@
 import { Tutorial } from './tutorial';
 import { config } from './config';
-import { buildLevel, resetGates, segmentsNear, type Level, type LevelData, type PadData, type Segment } from './level';
+import { buildLevel, resetGates, segmentsNear, type Gate, type Level, type LevelData, type PadData, type Segment } from './level';
 import { add, closestPointSegment, deg, dist, distPointSegment, dot, len, scale, segmentIntersectionT, segmentsIntersect, sub, type Vec } from './math';
 import {
   ANCHOR,
@@ -175,6 +175,8 @@ export const BALLOON_R = 28; // envelope radius (it's a bit taller than wide)
 export const BALLOON_GUN_DROP = 52; // basket/gun hangs this far below the envelope centre
 export const TANK_W = 48; // big on purpose: easy to hit by accident with dumb-fire missiles
 export const TANK_H = 34;
+/** How far sideways of a tank's centre you can be and still refuel from it. */
+export const TANK_REACH_X = 45;
 export const SURVIVOR_CALL_RANGE = 280; // land within this distance and they come running
 export const SURVIVOR_SPEED = 70;
 export const TURRET_RADIUS = 22; // dome size; also the collision size
@@ -255,6 +257,10 @@ export class Game {
   /** Visual pulse on the lives display after earning one. */
   lifeFlash = 0;
   fuelBonus = 0;
+  /** Where you last died (picks the nearest respawn point). */
+  deathPos: Vec | null = null;
+  /** You died carrying the orb: you respawn holding it. */
+  private carryingAtDeath = false;
   /** Respawned at a checkpoint and waiting for the first input (no gravity, turrets hold fire). */
   held = false;
   /** On the launch pad since (re)spawning and not yet lifted off: enemies hold fire and can't hurt you. */
@@ -342,6 +348,7 @@ export class Game {
       charge: 0,
       alive: true,
     }));
+    // each rescue pad has a set number of guards (0 = unguarded); they also stop once its hostages are picked up
     this.posts = d.pads.filter((p) => (p.guards ?? 0) > 0).map((pad) => ({ pad, remaining: pad.guards!, timer: 0 }));
     this.projectiles = [];
     this.particles = [];
@@ -385,22 +392,41 @@ export class Game {
     this.acc = 0;
   }
 
-  /** Where to respawn given progress so far (null = launch pad). Internal only: no "checkpoint" UI. */
-  private checkpoint(): Vec | null {
-    if (!this.orb.delivered) return null;
-    const cp = this.level.data.checkpoints?.find((c) => c.after === 'delivery');
-    if (cp) return { x: cp.x, y: cp.y };
+  /** The level's checkpoints (or, if it has none, one above the bowl). Internal only: no checkpoint UI. */
+  checkpoints(): { x: number; y: number; fuel: number }[] {
+    const cps = this.level.data.checkpoints ?? [];
+    if (cps.length) return cps.map((c) => ({ x: c.x, y: c.y, fuel: c.fuel ?? this.cfg.fuelRespawnMin }));
     const b = this.level.bowl;
-    return { x: b.cx, y: b.rimY - 220 };
+    return [{ x: b.cx, y: b.rimY - 220, fuel: this.cfg.fuelRespawnMin }];
   }
 
-  /** Minimum fuel guaranteed at the current respawn point (so you can't be soft-locked). */
-  private checkpointFuel(): number {
-    const d = this.level.data;
-    const min = this.orb.delivered
-      ? (d.checkpoints?.find((c) => c.after === 'delivery')?.fuel ?? this.cfg.fuelRespawnMin)
-      : (d.startFuelMin ?? this.cfg.fuelRespawnMin);
-    return Math.min(min, this.cfg.fuelMax);
+  /**
+   * Where to come back after dying: whichever respawn point (the launch pad or a checkpoint) is
+   * closest to where you died, by flying distance through open air (so one just the other side of a
+   * rock wall doesn't count as close). `at` null = on the launch pad.
+   */
+  respawnPoint(carryingOrb = false): { at: Vec | null; fuel: number } {
+    const pad = this.level.startPad;
+    const cands: { at: Vec | null; pos: Vec; fuel: number }[] = [
+      ...(carryingOrb ? [] : [{ at: null, pos: { x: pad.x + pad.w / 2, y: pad.y - 40 }, fuel: this.level.data.startFuelMin ?? this.cfg.fuelRespawnMin }]),
+      ...this.checkpoints()
+        // carrying: only checkpoints with room for the orb to hang below (if none have room, any will do)
+        .filter((c, _, all) => !carryingOrb || !all.some((o) => this.orbHangRoom(o)) || this.orbHangRoom(c))
+        .map((c) => ({ at: { x: c.x, y: c.y }, pos: { x: c.x, y: c.y }, fuel: c.fuel })),
+    ];
+    const from = this.deathPos ?? this.heli.pos;
+    const flying = this.flyingDistances(from, cands.map((c) => c.pos));
+    const reachable = flying.some((d) => Number.isFinite(d));
+    let best = 0;
+    let bestD = Infinity;
+    cands.forEach((c, i) => {
+      const d = reachable ? flying[i] : dist(from, c.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return { at: cands[best].at, fuel: cands[best].fuel };
   }
 
   flash(text: string, sub: string | undefined, color: string, life = 2): void {
@@ -507,7 +533,8 @@ export class Game {
           h.vel.y = Math.max(h.vel.y, 0);
         }
       }
-      if (orb.attached) {
+      if (orb.attached && !this.held) {
+        // (held at a checkpoint: the orb hangs frozen under you too, until you touch a control)
         integrate(orb, { x: 0, y: 0 }, cfg.gravity, cfg.orbDrag, dt);
         solveRod(h, heliPoint(h, ANCHOR), orb, cfg.rodLength, h.landed);
       }
@@ -543,13 +570,28 @@ export class Game {
   private respawn(): void {
     this.phase = this.completedAt !== null ? 'complete' : 'playing';
     this.phaseTime = 0;
-    if (!this.orb.delivered) {
+    const carrying = this.carryingAtDeath && !this.orb.delivered;
+    this.carryingAtDeath = false;
+    if (!this.orb.delivered && !carrying) {
       this.resetOrb();
       resetGates(this.level);
     }
-    this.spawnHeli(this.checkpoint() ?? undefined);
+    // died carrying the orb: gates stay as they were (sealed behind you), and you come back at the
+    // nearest checkpoint (never the pad: the orb can't hang under a landed heli) still holding it
+    const rp = this.respawnPoint(carrying);
+    this.spawnHeli(rp.at ?? undefined);
+    if (carrying) {
+      const orb = this.orb;
+      const hook = heliPoint(this.heli, ANCHOR);
+      orb.pos = { x: hook.x, y: hook.y + this.cfg.rodLength };
+      orb.vel = { x: 0, y: 0 };
+      orb.attached = true;
+      orb.free = false;
+      this.orbLostTimer = 0;
+      this.settleTime = 0;
+    }
     // no refuel on death: keep what you had, with a small safety net so you're never stranded
-    this.fuel = Math.max(this.fuel, this.checkpointFuel());
+    this.fuel = Math.max(this.fuel, Math.min(rp.fuel, this.cfg.fuelMax));
   }
 
   // ------------------------------------------------------------- collision
@@ -760,6 +802,7 @@ export class Game {
     const opening = this.level.gates.filter((gt) => gt.opens === 'delivery' && !gt.open);
     opening.forEach((gt) => (gt.open = true));
     if (opening.length) this.events.push({ type: 'gate' });
+    this.sealGates('delivery');
     // no text: the bowl flare, the chime and the lit ORB lamp say it
     this.events.push({ type: 'delivered', pos: at });
   }
@@ -889,6 +932,7 @@ export class Game {
 
   /** Landed with an empty tank: you can't take off and won't die, so end the attempt (no explosion). */
   private strand(): void {
+    this.deathPos = { ...this.heli.pos };
     this.phase = 'dead';
     this.phaseTime = 0;
     this.deaths++;
@@ -903,6 +947,7 @@ export class Game {
   private crash(reason: string): void {
     if (this.phase !== 'playing') return; // the mission's over: nothing can hurt you now
     const h = this.heli;
+    this.deathPos = { ...h.pos };
     this.phase = 'dead';
     this.phaseTime = 0;
     this.deaths++;
@@ -914,10 +959,11 @@ export class Game {
     for (const s of hullWorld(h)) this.shatter(s.a, s.b, h.vel, COLORS.heli);
     this.events.push({ type: 'heliDown', pos: h.pos });
     for (const s of this.survivors) if (s.state === 'aboard' || s.state === 'running') s.state = s.state === 'aboard' ? 'lost' : 'waiting';
+    this.carryingAtDeath = this.orb.attached;
     if (this.orb.attached) {
       this.explode(this.orb.pos, 50, 300, COLORS.orb);
       this.orb.attached = false;
-      this.orb.pos = { x: -99999, y: -99999 }; // hidden until respawn
+      this.orb.pos = { x: -99999, y: -99999 }; // hidden until respawn (back on its pedestal, or with you if you were carrying it)
     }
   }
 
@@ -945,9 +991,7 @@ export class Game {
         orb.free = false;
         solveRod(h, anchor, orb, L, h.landed);
         this.events.push({ type: 'tether', pos: orb.pos });
-        const sealing = this.level.gates.filter((gt) => gt.closes === 'pickup' && gt.open);
-        sealing.forEach((gt) => (gt.open = false));
-        if (sealing.length) this.events.push({ type: 'gate' });
+        this.sealGates('pickup');
         this.ring(orb.pos, 50, COLORS.orb, 0.5);
       }
     }
@@ -1420,6 +1464,37 @@ export class Game {
     return best;
   }
 
+  /** Seal the gates set to close on this event (now, or as soon as you're clear of them). */
+  private sealGates(when: 'pickup' | 'delivery'): void {
+    let sealed = false;
+    for (const gt of this.level.gates) {
+      if (gt.closes !== when || !gt.open) continue;
+      if (this.inGate(gt)) gt.sealPending = true;
+      else {
+        gt.open = false;
+        sealed = true;
+      }
+    }
+    if (sealed) this.events.push({ type: 'gate' });
+  }
+
+  /** Is the heli, or the orb (on its rod or loose), in or touching this gate? */
+  private inGate(gt: Gate): boolean {
+    const touching = (p: Vec, r: number) => {
+      let inside = false;
+      for (let i = 0, j = gt.pts.length - 1; i < gt.pts.length; j = i++) {
+        const a = gt.pts[i];
+        const b = gt.pts[j];
+        if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+        if (distPointSegment(p, a, b) < r) return true;
+      }
+      return inside;
+    };
+    if (this.alive && touching(this.heli.pos, HULL_RADIUS + 4)) return true;
+    const orb = this.orb;
+    return (orb.attached || orb.free) && touching(orb.pos, this.cfg.orbRadius + 4);
+  }
+
   private insideRock(p: Vec): boolean {
     for (const pts of this.level.polygons) {
       let inside = false;
@@ -1448,24 +1523,148 @@ export class Game {
   private buildNav(): void {
     const cell = 40;
     const x0 = 0;
-    const y0 = -600;
+    // cover the whole playable height (some levels reach up to their top border)
+    const d = this.level.data;
+    const highest = Math.min(...d.pads.map((p) => p.y), d.orb.y, d.bowl.y, ...(d.checkpoints ?? []).map((c) => c.y), ...(d.balloons ?? []).map((b) => b.y));
+    const y0 = Math.min(-600, Math.floor((highest - 400) / cell) * cell);
     const maxY = Math.max(...this.level.polygons.flat().map((p) => p.y));
     const cols = Math.ceil(this.level.data.width / cell);
     const rows = Math.ceil((maxY - y0) / cell);
     const free = new Uint8Array(cols * rows);
+    // the grid ignores gates (built as if all open); closed ones are blocked per search (navFree)
+    const gatesWere = this.level.gates.map((g) => g.open);
+    for (const g of this.level.gates) g.open = true;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const p = { x: x0 + (c + 0.5) * cell, y: y0 + (r + 0.5) * cell };
         free[r * cols + c] = this.clearance(p, 60) >= 38 ? 1 : 0;
       }
     }
+    for (let i = 0; i < gatesWere.length; i++) this.level.gates[i].open = gatesWere[i];
     this.nav = { cell, x0, y0, cols, rows, free };
+  }
+
+  private navGateKey = '';
+  private navGateFree: Uint8Array | null = null;
+
+  /** Open nav cells right now: the grid, minus cells too close to a gate that's currently closed. */
+  private navFree(): Uint8Array {
+    const n = this.nav!;
+    const key = this.level.gates.map((g) => (g.open ? 1 : 0)).join('');
+    if (this.navGateFree && key === this.navGateKey) return this.navGateFree;
+    const free = n.free.slice();
+    for (const sg of this.level.segments) {
+      if (sg.gate === undefined || this.level.gates[sg.gate].open) continue;
+      const c0 = Math.max(0, Math.floor((sg.minX - 40 - n.x0) / n.cell));
+      const c1 = Math.min(n.cols - 1, Math.floor((sg.maxX + 40 - n.x0) / n.cell));
+      const r0 = Math.max(0, Math.floor((sg.minY - 40 - n.y0) / n.cell));
+      const r1 = Math.min(n.rows - 1, Math.floor((sg.maxY + 40 - n.y0) / n.cell));
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const p = { x: n.x0 + (c + 0.5) * n.cell, y: n.y0 + (r + 0.5) * n.cell };
+          if (distPointSegment(p, sg.a, sg.b) < 38) free[r * n.cols + c] = 0;
+        }
+      }
+    }
+    this.navGateKey = key;
+    this.navGateFree = free;
+    return free;
+  }
+
+  /** Is there room for the orb to hang on its rod straight below a heli hovering at p? */
+  private orbHangRoom(p: Vec): boolean {
+    const hook = { x: p.x + ANCHOR.x, y: p.y + ANCHOR.y };
+    return this.clearPath(hook, { x: hook.x, y: hook.y + this.cfg.rodLength }, this.cfg.orbRadius + 4);
+  }
+
+  /** Flying distance from `from` to each target over the nav grid (Infinity where there's no way through). */
+  flyingDistances(from: Vec, targets: Vec[]): number[] {
+    if (!this.nav) this.buildNav();
+    const n = this.nav!;
+    const free = this.navFree();
+    const start = this.navNearestFree(from);
+    if (start < 0) return targets.map(() => Infinity);
+    const steps = new Float64Array(n.cols * n.rows).fill(Infinity);
+    steps[start] = 0;
+    // Dijkstra over the grid (diagonal steps cost √2), with a small binary heap
+    const heap: [number, number][] = [[0, start]];
+    const push = (d: number, i: number) => {
+      heap.push([d, i]);
+      for (let k = heap.length - 1; k > 0; ) {
+        const p = (k - 1) >> 1;
+        if (heap[p][0] <= heap[k][0]) break;
+        [heap[p], heap[k]] = [heap[k], heap[p]];
+        k = p;
+      }
+    };
+    const pop = (): [number, number] => {
+      const top = heap[0];
+      const last = heap.pop()!;
+      if (heap.length) {
+        heap[0] = last;
+        for (let k = 0; ; ) {
+          const l = 2 * k + 1;
+          const r = l + 1;
+          let m = k;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === k) break;
+          [heap[m], heap[k]] = [heap[k], heap[m]];
+          k = m;
+        }
+      }
+      return top;
+    };
+    while (heap.length) {
+      const [d, i] = pop();
+      if (d > steps[i]) continue;
+      const c = i % n.cols;
+      const r = Math.floor(i / n.cols);
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        const cc = c + dc;
+        const rr = r + dr;
+        if (cc < 0 || rr < 0 || cc >= n.cols || rr >= n.rows) continue;
+        const j = rr * n.cols + cc;
+        if (!free[j]) continue;
+        if (dc && dr && (!free[r * n.cols + cc] || !free[rr * n.cols + c])) continue; // no corner cutting
+        const nd = d + (dc && dr ? Math.SQRT2 : 1);
+        if (nd < steps[j]) {
+          steps[j] = nd;
+          push(nd, j);
+        }
+      }
+    }
+    return targets.map((t) => {
+      const g = this.navNearestFree(t);
+      return g < 0 ? Infinity : steps[g] * n.cell;
+    });
+  }
+
+  /** The open nav cell nearest a point (small spiral search), or -1. */
+  private navNearestFree(p: Vec): number {
+    const n = this.nav!;
+    const free = this.navFree();
+    const c0 = Math.max(0, Math.min(n.cols - 1, Math.floor((p.x - n.x0) / n.cell)));
+    const r0 = Math.max(0, Math.min(n.rows - 1, Math.floor((p.y - n.y0) / n.cell)));
+    if (free[r0 * n.cols + c0]) return r0 * n.cols + c0;
+    for (let rad = 1; rad < 6; rad++) {
+      for (let dr = -rad; dr <= rad; dr++) {
+        for (let dc = -rad; dc <= rad; dc++) {
+          const c = c0 + dc;
+          const r = r0 + dr;
+          if (c < 0 || r < 0 || c >= n.cols || r >= n.rows) continue;
+          if (free[r * n.cols + c]) return r * n.cols + c;
+        }
+      }
+    }
+    return -1;
   }
 
   /** Breadth-first route over the nav grid from `from` to (the open cell nearest) `to`. */
   navPath(from: Vec, to: Vec): Vec[] {
     if (!this.nav) this.buildNav();
     const n = this.nav!;
+    const free = this.navFree();
     const idx = (p: Vec) => {
       const c = Math.max(0, Math.min(n.cols - 1, Math.floor((p.x - n.x0) / n.cell)));
       const r = Math.max(0, Math.min(n.rows - 1, Math.floor((p.y - n.y0) / n.cell)));
@@ -1475,7 +1674,7 @@ export class Game {
     // nearest open cell to a point (small spiral search)
     const nearestFree = (p: Vec) => {
       const i0 = idx(p);
-      if (n.free[i0]) return i0;
+      if (free[i0]) return i0;
       const c0 = i0 % n.cols;
       const r0 = Math.floor(i0 / n.cols);
       for (let rad = 1; rad < 6; rad++) {
@@ -1484,7 +1683,7 @@ export class Game {
             const c = c0 + dc;
             const r = r0 + dr;
             if (c < 0 || r < 0 || c >= n.cols || r >= n.rows) continue;
-            if (n.free[r * n.cols + c]) return r * n.cols + c;
+            if (free[r * n.cols + c]) return r * n.cols + c;
           }
         }
       }
@@ -1506,8 +1705,8 @@ export class Game {
         const rr = r + dr;
         if (cc < 0 || rr < 0 || cc >= n.cols || rr >= n.rows) continue;
         const j = rr * n.cols + cc;
-        if (!n.free[j] || prev[j] >= 0) continue;
-        if (dc && dr && (!n.free[r * n.cols + cc] || !n.free[rr * n.cols + c])) continue; // no corner cutting
+        if (!free[j] || prev[j] >= 0) continue;
+        if (dc && dr && (!free[r * n.cols + cc] || !free[rr * n.cols + c])) continue; // no corner cutting
         prev[j] = i;
         queue.push(j);
       }
@@ -1538,7 +1737,7 @@ export class Game {
       if (!t.alive) continue;
       const top = { x: t.pos.x, y: t.pos.y - TANK_H };
       const dy = top.y - h.pos.y;
-      if (Math.abs(t.pos.x - h.pos.x) > 45 || dy < 0 || dy > this.cfg.tankReach) continue;
+      if (Math.abs(t.pos.x - h.pos.x) > TANK_REACH_X || dy < 0 || dy > this.cfg.tankReach) continue;
       if (!this.lineOfSight({ x: h.pos.x, y: h.pos.y + SKID_Y + 2 }, { x: top.x, y: top.y - 1 })) continue;
       if (!best || dy < best.pos.y - TANK_H - h.pos.y) best = t;
     }
@@ -1714,6 +1913,16 @@ export class Game {
     this.lifeFlash = Math.max(0, this.lifeFlash - dt * 0.6);
     this.shieldFlash = Math.max(0, this.shieldFlash - dt * 3);
     if (!this.alive) this.shield = false;
+    // a gate due to seal waits until you (and the orb) are clear of it, so it can't crush you
+    let sealed = false;
+    for (const gt of this.level.gates) {
+      if (gt.sealPending && gt.open && !this.inGate(gt)) {
+        gt.open = false;
+        gt.sealPending = false;
+        sealed = true;
+      }
+    }
+    if (sealed) this.events.push({ type: 'gate' });
     for (const gt of this.level.gates) gt.fade += ((gt.open ? 1 : 0) - gt.fade) * (1 - Math.exp(-4 * dt));
 
 

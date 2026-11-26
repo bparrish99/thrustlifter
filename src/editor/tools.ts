@@ -1,6 +1,8 @@
 import type { Config } from '../config';
 import type { LevelData } from '../level';
+import { SURVIVOR_CALL_RANGE, TANK_H, TANK_REACH_X } from '../game';
 import { distPointSegment, segmentIntersectionT, type Vec } from '../math';
+import { ANCHOR } from '../physics';
 
 /** Plain terrain edges (no pads/bowl/gates), for snapping things onto the ground. */
 export function terrainEdges(d: LevelData): [Vec, Vec][] {
@@ -87,7 +89,7 @@ export function newLevelTemplate(): LevelData {
     width: 3000,
     targetTime: 120,
     startFuelMin: 50,
-    checkpoints: [{ x: 2300, y: 560, after: 'delivery', fuel: 40 }],
+    checkpoints: [{ x: 2300, y: 560, fuel: 40 }],
     terrain: [[0, 1400, 0, -1200, 120, -1200, 140, 800, 2860, 800, 2880, -1200, 3000, -1200, 3000, 1400]],
     pads: [{ x: 220, y: 800 - PAD_EMBED, w: 160, kind: 'start' }],
     orb: { x: 1300, y: 800 - ORB_PEDESTAL_HEIGHT - 16.5 },
@@ -112,8 +114,14 @@ export function validate(d: LevelData, cfg: Config): Problem[] {
   if (!(d.width > 400)) out.push({ level: 'error', text: 'Level width is too small.' });
   if (!(d.targetTime && d.targetTime > 0)) out.push({ level: 'warn', text: 'No target time (no time bonus).' });
   if (!(d.startFuelMin && d.startFuelMin > 0)) out.push({ level: 'error', text: 'Set a minimum fuel for respawning at the launch pad.' });
-  const cp = d.checkpoints?.find((c) => c.after === 'delivery');
-  if (!cp?.fuel) out.push({ level: 'error', text: 'Place an after-delivery checkpoint and give it a minimum fuel.' });
+  for (const c of d.checkpoints ?? []) {
+    if (!c.fuel) out.push({ level: 'error', text: 'A checkpoint needs a respawn fuel amount.', at: c });
+    if (insideRock(d, c)) out.push({ level: 'error', text: 'A checkpoint is inside rock.', at: c });
+    // you can respawn here carrying the orb, hanging on its rod below you: it needs room
+    const g = groundBelow(d, c, 600);
+    if (!insideRock(d, c) && g !== null && g - c.y < ANCHOR.y + cfg.rodLength + 16 + 12)
+      out.push({ level: 'warn', text: 'A checkpoint is too close to the ground for the orb to hang below it (if you die carrying the orb).', at: c });
+  }
   if (insideRock(d, d.orb)) out.push({ level: 'error', text: 'The orb is inside rock.', at: d.orb });
   const g = groundBelow(d, d.orb, 400);
   if (g === null || Math.abs(g - (d.orb.y + 16.5 + ORB_PEDESTAL_HEIGHT)) > 20)
@@ -122,8 +130,9 @@ export function validate(d: LevelData, cfg: Config): Problem[] {
   for (const p of d.pads) {
     if (insideRock(d, { x: p.x + p.w / 2, y: p.y - 30 })) out.push({ level: 'error', text: 'A pad is buried in rock.', at: { x: p.x + p.w / 2, y: p.y } });
   }
+  for (const h of strayHostages(d)) out.push({ level: 'warn', text: 'Hostages with no rescue pad nearby (select them and press Del, or add a pad).', at: h });
   for (const t of d.fuelTanks ?? []) {
-    if (Math.abs(t.x - d.orb.x) <= cfg.rodLength + 45 + 40)
+    if (tankOrbConflict(t, d.orb, cfg))
       out.push({ level: 'error', text: 'A fuel tank is so close to the orb that Space would grab both.', at: t });
   }
   for (const t of d.turrets) {
@@ -189,4 +198,129 @@ export function tightSpots(d: LevelData, heli: number, withOrb: number, step = 2
     }
   }
   return out;
+}
+
+/**
+ * Could you hover somewhere that has both a fuel tank and the orb in reach of Space at once?
+ * Refuelling works from a box above the tank (within TANK_REACH_X sideways, up to tankReach above
+ * its top); tethering works while the rod hook (ANCHOR, under the skids) is within rodLength of
+ * the orb. They clash only if that box comes near the tether's reach (with a margin for tilt
+ * swinging the hook sideways). Height counts: a tank far above or below the orb is fine.
+ */
+export function tankOrbConflict(t: { x: number; y: number }, orb: { x: number; y: number }, cfg: Pick<Config, 'rodLength' | 'tankReach'>): boolean {
+  const top = t.y - TANK_H;
+  // the heli positions that can refuel from this tank
+  const box = { l: t.x - TANK_REACH_X, r: t.x + TANK_REACH_X, t: top - cfg.tankReach, b: top };
+  // the heli positions that can tether the orb: a disc around the orb, offset by the hook
+  const c = { x: orb.x - ANCHOR.x, y: orb.y - ANCHOR.y };
+  const reach = cfg.rodLength + 40; // margin: tilt swings the hook, and you don't want them close anyway
+  const nx = Math.max(box.l, Math.min(c.x, box.r));
+  const ny = Math.max(box.t, Math.min(c.y, box.b));
+  return Math.hypot(c.x - nx, c.y - ny) <= reach;
+}
+
+/**
+ * The hostages that belong to rescue pad `padIndex`: those standing near it (the same "near" the game
+ * uses to tie hostages to a pad's guards), and nearer this rescue pad than any other.
+ */
+export function padHostages(d: LevelData, padIndex: number): number[] {
+  const pad = d.pads[padIndex];
+  if (!pad || pad.kind !== 'rescue') return [];
+  const out: number[] = [];
+  (d.survivors ?? []).forEach((s, i) => {
+    if (nearestRescuePad(d, s) === padIndex) out.push(i);
+  });
+  return out;
+}
+
+/** Index of the rescue pad a hostage belongs to, or -1 if none is near enough. */
+function nearestRescuePad(d: LevelData, s: { x: number; y: number }): number {
+  let best = -1;
+  let bd = Infinity;
+  d.pads.forEach((p, i) => {
+    if (p.kind !== 'rescue') return;
+    const dx = Math.abs(s.x - (p.x + p.w / 2));
+    if (dx < SURVIVOR_CALL_RANGE + p.w && Math.abs(s.y - p.y) < 80 && dx < bd) {
+      bd = dx;
+      best = i;
+    }
+  });
+  return best;
+}
+
+/** Hostages with no rescue pad near enough to land on and pick them up. */
+export function strayHostages(d: LevelData): { x: number; y: number }[] {
+  return (d.survivors ?? []).filter((s) => nearestRescuePad(d, s) < 0);
+}
+
+// ---------------------------------------------------------------- cutting a passage through rock
+
+/** Positions along a rock shape's outline: each vertex's distance from vertex 0, and the total. */
+function outline(poly: number[]): { pts: Vec[]; cum: number[]; total: number } {
+  const pts: Vec[] = [];
+  for (let k = 0; k < poly.length; k += 2) pts.push({ x: poly[k], y: poly[k + 1] });
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  const last = pts[pts.length - 1];
+  const total = cum[cum.length - 1] + Math.hypot(pts[0].x - last.x, pts[0].y - last.y);
+  return { pts, cum, total };
+}
+
+/** How far along the outline a point on edge `i` (from vertex i to vertex i+1) is. */
+export function outlinePos(poly: number[], i: number, at: Vec): number {
+  const { pts, cum } = outline(poly);
+  return cum[i] + Math.hypot(at.x - pts[i].x, at.y - pts[i].y);
+}
+
+function outlinePoint(o: ReturnType<typeof outline>, s: number): Vec {
+  const { pts, cum, total } = o;
+  s = ((s % total) + total) % total;
+  for (let i = 0; i < pts.length; i++) {
+    const end = i + 1 < pts.length ? cum[i + 1] : total;
+    if (s <= end) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const t = end > cum[i] ? (s - cum[i]) / (end - cum[i]) : 0;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+  }
+  return pts[0];
+}
+
+/**
+ * Cut a passage `width` wide straight through a rock shape, between two points on its outline
+ * (given as positions along it, see outlinePos). The shape becomes two shapes with a gap between
+ * them: each keeps its own stretch of outline, stopping width/2 short of the cut points, and the
+ * gap's walls run between those ends. Returns null if either stretch is too short to cut.
+ */
+export function cutRock(poly: number[], sa: number, sb: number, width: number): [number[], number[]] | null {
+  const o = outline(poly);
+  const fwd = (s0: number, s1: number) => (((s1 - s0) % o.total) + o.total) % o.total;
+  const half = width / 2;
+  if (fwd(sa, sb) < width + 20 || fwd(sb, sa) < width + 20) return null;
+  const chain = (s0: number, s1: number): number[] => {
+    const L = fwd(s0, s1);
+    const mid = o.pts
+      .map((p, k) => ({ p, d: fwd(s0, o.cum[k]) }))
+      .filter((v) => v.d > 0.5 && v.d < L - 0.5)
+      .sort((a, b) => a.d - b.d)
+      .map((v) => v.p);
+    return [outlinePoint(o, s0), ...mid, outlinePoint(o, s1)].flatMap((p) => [Math.round(p.x), Math.round(p.y)]);
+  };
+  const a = chain(sa + half, sb - half);
+  const b = chain(sb + half, sa - half);
+  if (a.length < 6 || b.length < 6) return null;
+  return [a, b];
+}
+
+/** Does the straight line between two points run entirely through rock (so cutting along it makes sense)? */
+export function cutsThroughRock(d: LevelData, a: Vec, b: Vec): boolean {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const n = Math.max(2, Math.ceil(len / 10));
+  for (let k = 1; k < n; k++) {
+    const t = k / n;
+    if (t * len < 8 || (1 - t) * len < 8) continue; // the ends sit on the outline
+    if (!insideRock(d, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) return false;
+  }
+  return true;
 }

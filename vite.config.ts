@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -29,8 +29,10 @@ function jsonRoute(fn: (body: any) => object) {
 
 /**
  * Dev-only endpoints for the in-game level editor:
- *   POST /__editor/save  { file, text, isNew? }  writes src/levels/<file>; a new level gets a file name
- *                        that doesn't clash with an existing one and is appended to the play order.
+ *   POST /__editor/save  { file, text, isNew?, renameTo? }  writes src/levels/<file>; a new level gets a file
+ *                        name that doesn't clash with an existing one and is appended to the play order;
+ *                        renameTo moves an existing level's file to match its new name (same place in the order).
+ *   POST /__editor/delete { file }               deletes a shelved level's file (refuses one in the play order).
  *   POST /__editor/order { order }               rewrites src/levels/order.json (the play order).
  *                        Files left out stay in the folder, "on the shelf".
  */
@@ -41,19 +43,34 @@ function levelEditorSave(): Plugin {
     configureServer(server) {
       server.middlewares.use(
         '/__editor/save',
-        jsonRoute(({ file, text, isNew }) => {
+        jsonRoute(({ file, text, isNew, renameTo }) => {
           if (!validName(file)) throw new Error('bad file name');
           JSON.parse(text); // must be valid JSON
-          let name = file;
+          /** `want`, or want-2, want-3... if another level already has that file (`keep` may be reused). */
+          const free = (want: string, keep?: string) => {
+            const base = want.replace(/\.json$/, '');
+            let name = want;
+            for (let n = 2; existsSync(resolve(LEVEL_DIR, name)) && name !== keep; n++) name = `${base}-${n}.json`;
+            return name;
+          };
+          const readOrder = () => JSON.parse(readFileSync(ORDER_PATH, 'utf8')) as string[];
+          const writeOrder = (o: string[]) => writeFileSync(ORDER_PATH, JSON.stringify(o) + '\n');
           if (isNew) {
-            const base = file.replace(/\.json$/, '');
-            for (let n = 2; existsSync(resolve(LEVEL_DIR, name)); n++) name = `${base}-${n}.json`;
+            // a new level never overwrites another file, and joins the end of the play order
+            const name = free(file);
+            writeFileSync(resolve(LEVEL_DIR, name), text);
+            const order = readOrder();
+            if (!order.includes(name)) writeOrder([...order, name]);
+            return { file: name };
           }
+          // an existing level: if its name changed, the file follows it (keeping its place in the play order)
+          let name = file;
+          if (validName(renameTo) && renameTo !== file) name = free(renameTo, file);
           writeFileSync(resolve(LEVEL_DIR, name), text);
-          const order = JSON.parse(readFileSync(ORDER_PATH, 'utf8')) as string[];
-          if (isNew && !order.includes(name)) {
-            order.push(name);
-            writeFileSync(ORDER_PATH, JSON.stringify(order) + '\n');
+          if (name !== file) {
+            const order = readOrder();
+            writeOrder(order.map((f) => (f === file ? name : f)));
+            if (existsSync(resolve(LEVEL_DIR, file))) unlinkSync(resolve(LEVEL_DIR, file));
           }
           return { file: name };
         }),
@@ -65,6 +82,17 @@ function levelEditorSave(): Plugin {
           if (new Set(order).size !== order.length) throw new Error('a level is listed twice');
           for (const f of order) if (!existsSync(resolve(LEVEL_DIR, f))) throw new Error(`no such level: ${f}`);
           writeFileSync(ORDER_PATH, JSON.stringify(order) + '\n');
+          return {};
+        }),
+      );
+      server.middlewares.use(
+        '/__editor/delete',
+        jsonRoute(({ file }) => {
+          if (!validName(file)) throw new Error('bad file name');
+          const order = JSON.parse(readFileSync(ORDER_PATH, 'utf8')) as string[];
+          if (order.includes(file)) throw new Error('take it out of the game first');
+          if (!existsSync(resolve(LEVEL_DIR, file))) throw new Error(`no such level: ${file}`);
+          unlinkSync(resolve(LEVEL_DIR, file));
           return {};
         }),
       );

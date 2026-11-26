@@ -1,15 +1,19 @@
 import { config } from '../config';
 import { Game } from '../game';
 import type { LevelData, PadData } from '../level';
-import { distPointSegment, type Vec } from '../math';
+import { closestPointSegment, distPointSegment, type Vec } from '../math';
 import type { Renderer } from '../render';
-import { LEVEL_FILES, SHELVED_LEVEL_FILES, levelFile } from '../levels';
+import { ALL_LEVEL_FILES, LEVEL_FILES, SHELVED_LEVEL_FILES, levelFile } from '../levels';
 import {
   ORB_PEDESTAL_HEIGHT,
   PAD_EMBED,
   formatLevel,
   nearestSurface,
   newLevelTemplate,
+  padHostages,
+  cutRock,
+  cutsThroughRock,
+  outlinePos,
   slugFile,
   snapToGround,
   tightSpots,
@@ -23,13 +27,14 @@ import {
  * into src/levels (dev server only). The session (draft, camera, file) survives page reloads.
  */
 
-type Tool = 'select' | 'rock' | 'pad' | 'rescue' | 'orb' | 'bowl' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint';
+type Tool = 'select' | 'rock' | 'cut' | 'pad' | 'rescue' | 'orb' | 'bowl' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint';
 
 const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
-  { id: 'select', key: '1', label: 'Select', hint: 'Click to select, drag to move. Double-click an edge to add a point. Del removes.' },
+  { id: 'select', key: '1', label: 'Select', hint: 'Click to select, drag to move. Shift+click a rock edge to add a point (drag to place it). Del removes.' },
   { id: 'rock', key: '2', label: 'Rock', hint: 'Click to place points of a new rock shape. Click the first point (or Enter) to close it.' },
+  { id: 'cut', key: 'x', label: 'Cut rock', hint: 'Click a rock edge, then the edge across the rock: carves a passage through it (splitting the rock). Esc cancels.' },
   { id: 'pad', key: '3', label: 'Launch pad', hint: 'Click the ground to move your launch/return pad there.' },
-  { id: 'rescue', key: '4', label: 'Rescue pad', hint: 'Click the ground to add a rescue pad (gets 1 guard and 2 survivors).' },
+  { id: 'rescue', key: '4', label: 'Rescue pad', hint: 'Click the ground to add a rescue pad (1 guard and 2 hostages; set the guard count in its properties).' },
   { id: 'orb', key: '5', label: 'Orb', hint: 'Click the ground to move the orb (its pedestal stands there).' },
   { id: 'bowl', key: '6', label: 'Bowl', hint: 'Click the ground to move the orb bowl.' },
   { id: 'turret', key: '7', label: 'Turret', hint: 'Click near any surface (floor, wall or ceiling) to mount a turret on it.' },
@@ -37,14 +42,14 @@ const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
   { id: 'tank', key: '9', label: 'Fuel tank', hint: 'Click the ground to add a fuel tank.' },
   { id: 'survivor', key: '0', label: 'Survivor', hint: 'Click the ground to add a survivor.' },
   { id: 'gate', key: '-', label: 'Gate', hint: 'Drag a rectangle to add an energy gate (opens on delivery; change in its properties).' },
-  { id: 'checkpoint', key: '=', label: 'Checkpoint', hint: 'Click to place the after-delivery respawn point (where you hover after dying post-delivery).' },
+  { id: 'checkpoint', key: '=', label: 'Checkpoint', hint: 'Click to add a checkpoint. Dying respawns you at the nearest checkpoint (or your launch pad), hovering.' },
 ];
 
 type Sel =
   | { kind: 'vert'; poly: number; i: number }
   | { kind: 'gatevert'; gate: number; i: number }
-  | { kind: 'pad' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate'; i: number }
-  | { kind: 'orb' | 'bowl' | 'checkpoint' }
+  | { kind: 'pad' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint'; i: number }
+  | { kind: 'orb' | 'bowl' }
   | null;
 
 interface Session {
@@ -81,6 +86,12 @@ export class Editor {
   private drag: { sel: Sel; last: Vec; moved: boolean } | null = null;
   private pan: { sx: number; sy: number; cx: number; cy: number } | null = null;
   private spaceDown = false;
+  /** Shift held: clicking a rock edge adds a point there (a preview shows where). */
+  private shiftDown = false;
+  /** Cut tool: the first point clicked on a rock edge, waiting for the second. */
+  private cutStart: { poly: number; at: Vec; s: number } | null = null;
+  /** Cut tool: how wide a passage to carve. */
+  private cutWidth = 160;
   private keys = new Set<string>();
   private undo: string[] = [];
   private redo: string[] = [];
@@ -112,7 +123,9 @@ export class Editor {
     addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
       if (e.code === 'Space') this.spaceDown = false;
+      this.shiftDown = e.shiftKey;
     });
+    addEventListener('keydown', (e) => (this.shiftDown = e.shiftKey));
   }
 
   // ------------------------------------------------------------------ session
@@ -151,7 +164,7 @@ export class Editor {
     const s = loadSession();
     if (!s || !localStorage.getItem(SESSION_KEY + '.active')) return false;
     this.draft = s.draft;
-    this.file = s.file;
+    this.file = fileStillThere(s.file, s.draft.name);
     this.cam = s.cam;
     this.active = true;
     this.showUi();
@@ -306,18 +319,17 @@ export class Editor {
           handle(ctx, { x: g.poly[k], y: g.poly[k + 1] }, px, sel ? '#ffffff' : '#ff3d8b', sel ? 6 : 3.5);
         }
       });
-      // checkpoint marker
-      const cp = d.checkpoints?.find((c) => c.after === 'delivery');
-      if (cp) {
-        ctx.strokeStyle = this.sel?.kind === 'checkpoint' ? '#ffffff' : '#3dff8a';
+      // checkpoint markers (editor only: invisible in play)
+      (d.checkpoints ?? []).forEach((cp, ci) => {
+        ctx.strokeStyle = this.sel?.kind === 'checkpoint' && this.sel.i === ci ? '#ffffff' : '#3dff8a';
         ctx.lineWidth = 2 * px;
         ctx.setLineDash([6 * px, 5 * px]);
         ctx.beginPath();
         ctx.arc(cp.x, cp.y, 40, 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
-        label(ctx, 'RESPAWN AFTER DELIVERY', cp.x, cp.y - 52, px, '#3dff8a');
-      }
+        label(ctx, `CHECKPOINT · fuel ${cp.fuel ?? config.fuelRespawnMin}`, cp.x, cp.y - 52, px, '#3dff8a');
+      });
       // balloon patrol ranges
       for (const b of d.balloons ?? []) {
         const pr = b.patrol ?? config.balloonPatrol;
@@ -346,6 +358,46 @@ export class Editor {
         ctx.beginPath();
         ctx.arc(p.at.x, p.at.y, 26 + 4 * Math.sin(performance.now() / 150), 0, Math.PI * 2);
         ctx.stroke();
+      }
+      // Shift held: preview where a click would add a rock point
+      // Cut tool: the passage it would carve (green through rock, red if it would cross open air)
+      if (this.tool === 'cut') {
+        const edge = this.edgeNear(this.mouse, 16);
+        if (edge) handle(ctx, edge.at, px, '#ff8a3d', 5);
+        if (this.cutStart) {
+          const a = this.cutStart.at;
+          const b = edge && edge.poly === this.cutStart.poly ? edge.at : this.mouse;
+          const ok = !!edge && edge.poly === this.cutStart.poly && cutsThroughRock(this.draft, a, b);
+          const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+          const nx = (-(b.y - a.y) / len) * (this.cutWidth / 2);
+          const ny = ((b.x - a.x) / len) * (this.cutWidth / 2);
+          ctx.fillStyle = ok ? 'rgba(61,255,138,0.18)' : 'rgba(255,60,60,0.18)';
+          ctx.strokeStyle = ok ? '#3dff8a' : '#ff5a5a';
+          ctx.lineWidth = 1.5 * px;
+          ctx.beginPath();
+          ctx.moveTo(a.x + nx, a.y + ny);
+          ctx.lineTo(b.x + nx, b.y + ny);
+          ctx.lineTo(b.x - nx, b.y - ny);
+          ctx.lineTo(a.x - nx, a.y - ny);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          handle(ctx, a, px, '#ff8a3d', 6);
+        }
+      }
+      if (this.shiftDown && !this.drag && this.tool !== 'rock' && this.tool !== 'gate' && this.hit(this.mouse)?.kind !== 'vert') {
+        const edge = this.edgeNear(this.mouse, 16);
+        if (edge) {
+          handle(ctx, edge.at, px, '#3dff8a', 5);
+          ctx.strokeStyle = '#3dff8a';
+          ctx.lineWidth = 1.5 * px;
+          ctx.beginPath();
+          ctx.moveTo(edge.at.x - 9 * px, edge.at.y);
+          ctx.lineTo(edge.at.x + 9 * px, edge.at.y);
+          ctx.moveTo(edge.at.x, edge.at.y - 9 * px);
+          ctx.lineTo(edge.at.x, edge.at.y + 9 * px);
+          ctx.stroke();
+        }
       }
       // rock in progress
       if (this.rockPts.length) {
@@ -448,7 +500,7 @@ export class Editor {
       case 'bowl':
         return box(d.bowl.x - 40, d.bowl.y - 34, 80, 34);
       case 'checkpoint': {
-        const c = d.checkpoints!.find((x) => x.after === 'delivery')!;
+        const c = d.checkpoints![s.i];
         return box(c.x - 40, c.y - 40, 80, 80);
       }
       default:
@@ -472,7 +524,6 @@ export class Editor {
       for (let k = 0; k < poly.length; k += 2) if (near({ x: poly[k], y: poly[k + 1] }, 9 * px)) return { kind: 'vert', poly: pi, i: k / 2 };
     }
     // objects
-    const cp = d.checkpoints?.find((c) => c.after === 'delivery');
     const order: Sel[] = [
       ...(d.balloons ?? []).map((_, i) => ({ kind: 'balloon' as const, i })),
       ...d.turrets.map((_, i) => ({ kind: 'turret' as const, i })),
@@ -482,7 +533,7 @@ export class Editor {
       { kind: 'bowl' },
       ...d.pads.map((_, i) => ({ kind: 'pad' as const, i })),
       ...(d.gates ?? []).map((_, i) => ({ kind: 'gate' as const, i })),
-      ...(cp ? [{ kind: 'checkpoint' as const }] : []),
+      ...(d.checkpoints ?? []).map((_, i) => ({ kind: 'checkpoint' as const, i })),
     ];
     for (const s of order) {
       const b = this.selBounds(s)!;
@@ -509,6 +560,25 @@ export class Editor {
       return;
     }
     if (e.button !== 0) return;
+    // Shift+click on a rock edge (any tool but Rock/Gate, which draw): add a point there and drag it
+    if (e.shiftKey && this.tool !== 'rock' && this.tool !== 'gate') {
+      const onPoint = this.hit(m);
+      if (onPoint?.kind === 'vert') {
+        // right on an existing point: grab that one instead of adding another beside it
+        this.sel = onPoint;
+        this.snapshot();
+        this.drag = { sel: onPoint, last: m, moved: false };
+        this.buildPanel();
+        return;
+      }
+      const edge = this.edgeNear(m, 16);
+      if (edge) {
+        this.snapshot();
+        const s = this.insertVertex(edge);
+        this.drag = { sel: s, last: m, moved: false };
+        return;
+      }
+    }
     const sp = { x: this.snap(m.x), y: this.snap(m.y) };
     const d = this.draft;
 
@@ -534,6 +604,8 @@ export class Editor {
       case 'gate':
         this.gateStart = sp;
         return;
+      case 'cut':
+        return this.cutClick(m);
     }
 
     // placement tools
@@ -600,10 +672,8 @@ export class Editor {
         return;
       case 'checkpoint': {
         this.snapshot();
-        const cp = d.checkpoints?.find((c) => c.after === 'delivery');
-        if (cp) Object.assign(cp, { x: sp.x, y: sp.y });
-        else (d.checkpoints ??= []).push({ x: sp.x, y: sp.y, after: 'delivery', fuel: 40 });
-        this.sel = { kind: 'checkpoint' };
+        (d.checkpoints ??= []).push({ x: sp.x, y: sp.y, fuel: 40 });
+        this.sel = { kind: 'checkpoint', i: d.checkpoints.length - 1 };
         this.changed();
         return;
       }
@@ -611,6 +681,7 @@ export class Editor {
   }
 
   private onMouseMove(e: MouseEvent): void {
+    this.shiftDown = e.shiftKey;
     this.mouseScreen = this.screenPos(e);
     const m = this.renderer.screenToWorld(this.mouseScreen.x, this.mouseScreen.y);
     this.mouse = m;
@@ -645,7 +716,7 @@ export class Editor {
         Object.assign(d.balloons![s.i], { x: sp.x, y: sp.y });
         break;
       case 'checkpoint':
-        Object.assign(d.checkpoints!.find((c) => c.after === 'delivery')!, { x: sp.x, y: sp.y });
+        Object.assign(d.checkpoints![s.i], { x: sp.x, y: sp.y });
         break;
       case 'turret': {
         const n = nearestSurface(d, m);
@@ -655,7 +726,18 @@ export class Editor {
       case 'pad': {
         const g = ground();
         const p = d.pads[s.i];
-        if (g !== null) Object.assign(p, { x: sp.x - p.w / 2, y: g - PAD_EMBED });
+        if (g !== null) {
+          // a rescue pad's hostages move with it, staying on the ground
+          const mine = padHostages(d, s.i);
+          const dx = sp.x - p.w / 2 - p.x;
+          Object.assign(p, { x: sp.x - p.w / 2, y: g - PAD_EMBED });
+          for (const i of mine) {
+            const h = d.survivors![i];
+            const hx = h.x + dx;
+            const hg = snapToGround(d, { x: hx, y: g - 40 });
+            Object.assign(h, { x: hx, y: hg ?? g });
+          }
+        }
         break;
       }
       case 'tank': {
@@ -711,27 +793,69 @@ export class Editor {
     }
   }
 
+  /** Cut tool: first click picks one side of the rock, second click (across it) carves the passage. */
+  private cutClick(m: Vec): void {
+    const edge = this.edgeNear(m, 16);
+    if (!edge) return this.flash('Click on the edge of a rock.');
+    const poly = this.draft.terrain[edge.poly];
+    const n = poly.length / 2;
+    const s = outlinePos(poly, (edge.j - 1 + n) % n, edge.at);
+    if (!this.cutStart) {
+      this.cutStart = { poly: edge.poly, at: edge.at, s };
+      return this.flash('Now click the edge on the other side of the rock.');
+    }
+    const start = this.cutStart;
+    if (edge.poly !== start.poly) return this.flash('Both ends of a cut must be on the same rock.');
+    if (!cutsThroughRock(this.draft, start.at, edge.at)) return this.flash('That line crosses open air: cut straight through rock.');
+    const pieces = cutRock(poly, start.s, s, this.cutWidth);
+    if (!pieces) return this.flash('Too close to a corner for that width: cut somewhere wider, or narrow the passage.');
+    this.snapshot();
+    this.draft.terrain.splice(edge.poly, 1, ...pieces);
+    this.cutStart = null;
+    this.sel = null;
+    this.changed();
+    this.flash('Cut! Drag the points to shape the passage (Ctrl+Z undoes).');
+  }
+
   private onDoubleClick(e: MouseEvent): void {
     if (this.tool !== 'select') return;
     const p = this.renderer.screenToWorld(this.screenPos(e).x, this.screenPos(e).y);
-    const tol = 8 / this.renderer.viewScale;
-    const d = this.draft;
-    for (let pi = 0; pi < d.terrain.length; pi++) {
-      const poly = d.terrain[pi];
+    const edge = this.edgeNear(p, 8);
+    if (!edge) return;
+    this.snapshot();
+    this.insertVertex(edge);
+  }
+
+  /** The rock edge within `tolPx` screen pixels of p, and the point on it nearest p. */
+  private edgeNear(p: Vec, tolPx: number): { poly: number; j: number; at: Vec } | null {
+    const tol = tolPx / this.renderer.viewScale;
+    let best: { poly: number; j: number; at: Vec } | null = null;
+    let bd = tol;
+    this.draft.terrain.forEach((poly, pi) => {
       const n = poly.length / 2;
       for (let i = 0; i < n; i++) {
         const j = (i + 1) % n;
         const a = { x: poly[i * 2], y: poly[i * 2 + 1] };
         const b = { x: poly[j * 2], y: poly[j * 2 + 1] };
-        if (distPointSegment(p, a, b) < tol) {
-          this.snapshot();
-          poly.splice(j === 0 ? poly.length : j * 2, 0, this.snap(p.x), this.snap(p.y));
-          this.sel = { kind: 'vert', poly: pi, i: j === 0 ? n : j };
-          this.changed();
-          return;
+        const dd = distPointSegment(p, a, b);
+        if (dd < bd) {
+          bd = dd;
+          best = { poly: pi, j, at: closestPointSegment(p, a, b) };
         }
       }
-    }
+    });
+    return best;
+  }
+
+  /** Add a rock point on an edge (exactly on it, so the shape doesn't change until you drag) and select it. */
+  private insertVertex(edge: { poly: number; j: number; at: Vec }): Sel {
+    const poly = this.draft.terrain[edge.poly];
+    const n = poly.length / 2;
+    const idx = edge.j === 0 ? n : edge.j;
+    poly.splice(idx * 2, 0, Math.round(edge.at.x), Math.round(edge.at.y));
+    this.sel = { kind: 'vert', poly: edge.poly, i: idx };
+    this.changed();
+    return this.sel;
   }
 
   private onWheel(e: WheelEvent): void {
@@ -781,9 +905,10 @@ export class Editor {
         if (this.rockPts.length >= 3) return this.finishRock();
         return this.test();
       case 'Escape':
-        if (this.rockPts.length || this.gateStart) {
+        if (this.rockPts.length || this.gateStart || this.cutStart) {
           this.rockPts = [];
           this.gateStart = null;
+          this.cutStart = null;
           return;
         }
         this.sel = null;
@@ -807,7 +932,9 @@ export class Editor {
     this.tool = t;
     this.rockPts = [];
     this.gateStart = null;
+    this.cutStart = null;
     this.buildToolbar();
+    this.buildPanel();
   }
 
   private finishRock(): void {
@@ -845,6 +972,11 @@ export class Editor {
           this.undo.pop();
           return this.flash("The launch pad can't be deleted (move it instead).");
         }
+        {
+          // a rescue pad's hostages go with it
+          const mine = padHostages(d, s.i);
+          d.survivors = (d.survivors ?? []).filter((_, i) => !mine.includes(i));
+        }
         d.pads.splice(s.i, 1);
         break;
       case 'turret':
@@ -860,7 +992,7 @@ export class Editor {
         d.survivors!.splice(s.i, 1);
         break;
       case 'checkpoint':
-        d.checkpoints = (d.checkpoints ?? []).filter((c) => c.after !== 'delivery');
+        d.checkpoints!.splice(s.i, 1);
         break;
       case 'orb':
       case 'bowl':
@@ -906,6 +1038,7 @@ export class Editor {
         file: this.file ?? slugFile(this.draft.name),
         text: formatLevel(this.draft),
         isNew,
+        renameTo: slugFile(this.draft.name), // the file follows the level's name
       });
       this.file = out.file;
       this.saveSession();
@@ -972,6 +1105,23 @@ export class Editor {
     void this.setOrder(order, `Moved to level ${order.indexOf(file) + 1}.`);
   }
 
+  /** Permanently delete a shelved level's file (asks first). */
+  private async deleteLevel(file: string): Promise<void> {
+    const name = levelFile(file)?.name ?? file;
+    if (!confirm(`Delete ${name} for good?\n\nThis removes its file. (If it was ever committed, git still has it.)`)) return;
+    try {
+      if (file === this.file) {
+        // the level being edited: carry on with the draft as an unsaved new level
+        this.file = null;
+      }
+      this.saveSession();
+      await post('/__editor/delete', { file });
+      this.flash(`Deleted ${name}.`);
+    } catch (e) {
+      this.flash(`Couldn't delete: ${String(e)} (needs the dev server).`);
+    }
+  }
+
   private shelveLevel(file: string): void {
     if (LEVEL_FILES.length <= 1) return this.flash('The game needs at least one level.');
     void this.setOrder(LEVEL_FILES.filter((f) => f !== file), 'Taken out of the game (kept on the shelf).');
@@ -1012,7 +1162,7 @@ export class Editor {
     this.toolbar.replaceChildren(
       el('div', { class: 'ed-title' }, 'LEVEL EDITOR'),
       ...TOOLS.map((t) => {
-        const b = el('button', { class: t.id === this.tool ? 'on' : '', title: t.hint }, `${t.key}  ${t.label}`);
+        const b = el('button', { class: t.id === this.tool ? 'on' : '', title: t.hint }, `${t.key.toUpperCase()}  ${t.label}`);
         b.onclick = () => this.setTool(t.id);
         return b;
       }),
@@ -1105,10 +1255,19 @@ export class Editor {
     num('Width', () => d.width, (v) => (d.width = Math.max(800, v)), 50);
     num('Target time (s)', () => d.targetTime, (v) => (d.targetTime = Math.max(0, v)), 5);
     num('Respawn fuel at pad', () => d.startFuelMin, (v) => (d.startFuelMin = Math.max(0, v)));
-    const cp = d.checkpoints?.find((c) => c.after === 'delivery');
-    if (cp) num('Respawn fuel after delivery', () => cp.fuel, (v) => (cp.fuel = Math.max(0, v)));
     check('Cave backdrop', () => d.backdropY !== undefined, (v) => (d.backdropY = v ? 640 : undefined));
     if (d.backdropY !== undefined) num('Cave backdrop starts at y', () => d.backdropY, (v) => (d.backdropY = v), 10);
+
+    if (this.tool === 'cut') {
+      section('CUT ROCK');
+      const input = el('input', { type: 'number', step: '10', value: String(this.cutWidth) }) as HTMLInputElement;
+      input.onchange = () => {
+        const v = parseFloat(input.value);
+        if (Number.isFinite(v)) this.cutWidth = Math.max(40, Math.min(600, v));
+      };
+      kids.push(el('label', {}, 'Passage width', input));
+      kids.push(el('div', { class: 'ed-note' }, 'Click a rock edge, then the edge across the rock. The heli needs about 95; carrying the orb through a tunnel needs about 200 of height.'));
+    }
 
     const s = this.sel;
     if (s) {
@@ -1118,8 +1277,11 @@ export class Editor {
           const p = d.pads[s.i];
           num('Width', () => p.w, (v) => (p.w = Math.max(60, v)), 10);
           if (p.kind === 'rescue') {
-            num('Guards', () => p.guards ?? 0, (v) => (p.guards = Math.max(0, Math.round(v))));
-            check('Guards wake only after delivery', () => p.guardsAfter === 'delivery', (v) => (p.guardsAfter = v ? 'delivery' : undefined));
+            num('Guards (0 = unguarded)', () => p.guards ?? 0, (v) => {
+              p.guards = Math.max(0, Math.round(v));
+              if (!p.guards) delete p.guardsAfter;
+            });
+            if ((p.guards ?? 0) > 0) check('Guards wake only after delivery', () => p.guardsAfter === 'delivery', (v) => (p.guardsAfter = v ? 'delivery' : undefined));
           }
           break;
         }
@@ -1133,20 +1295,30 @@ export class Editor {
           num('Fuel amount', () => t.amount ?? config.tankAmount, (v) => (t.amount = Math.max(1, v)));
           break;
         }
+        case 'checkpoint': {
+          const c = d.checkpoints![s.i];
+          num('Respawn fuel here', () => c.fuel ?? config.fuelRespawnMin, (v) => (c.fuel = Math.max(1, v)));
+          kids.push(el('div', { class: 'ed-note' }, 'Dying respawns you at the nearest checkpoint (or your launch pad), hovering until you touch a control, topped up to this fuel.'));
+          break;
+        }
         case 'gate':
         case 'gatevert': {
           const g = d.gates![s.kind === 'gatevert' ? s.gate : s.i];
           const sel = el('select', {}) as HTMLSelectElement;
-          sel.append(el('option', { value: 'opens' }, 'Opens when the orb is delivered'), el('option', { value: 'closes' }, 'Seals when you grab the orb'));
-          sel.value = g.closes ? 'closes' : 'opens';
+          sel.append(
+            el('option', { value: 'opens' }, 'Opens when the orb is delivered'),
+            el('option', { value: 'closes' }, 'Seals when you grab the orb'),
+            el('option', { value: 'closesDelivery' }, 'Seals when the orb is delivered'),
+          );
+          sel.value = g.closes === 'delivery' ? 'closesDelivery' : g.closes ? 'closes' : 'opens';
           sel.onchange = () => {
             this.snapshot();
-            if (sel.value === 'closes') {
-              delete g.opens;
-              g.closes = 'pickup';
-            } else {
+            if (sel.value === 'opens') {
               delete g.closes;
               g.opens = 'delivery';
+            } else {
+              delete g.opens;
+              g.closes = sel.value === 'closesDelivery' ? 'delivery' : 'pickup';
             }
             this.changed();
           };
@@ -1154,7 +1326,7 @@ export class Editor {
           break;
         }
         case 'vert':
-          kids.push(el('div', { class: 'ed-note' }, 'Del removes this point · Shift+Del removes the whole shape · double-click an edge to add a point'));
+          kids.push(el('div', { class: 'ed-note' }, 'Del removes this point · Shift+Del removes the whole shape · Shift+click (or double-click) a rock edge to add a point'));
           break;
       }
       if (s.kind !== 'orb' && s.kind !== 'bowl' && !(s.kind === 'pad' && d.pads[s.i].kind === 'start')) kids.push(button('🗑 Delete  [Del]', () => this.deleteSel()));
@@ -1200,7 +1372,7 @@ export class Editor {
     );
     if (this.file === null) kids.push(el('div', { class: 'ed-lvrow on' }, el('div', { class: 'ed-lvnew' }, `+  ${this.draft.name} (save to add it)`)));
     section(`SHELF · NOT PLAYED · ${SHELVED_LEVEL_FILES.length}`);
-    if (!SHELVED_LEVEL_FILES.length) kids.push(el('div', { class: 'ed-note' }, 'Levels you take out of the game wait here, untouched.'));
+    if (!SHELVED_LEVEL_FILES.length) kids.push(el('div', { class: 'ed-note' }, 'Levels you take out of the game wait here, untouched. Only levels here can be deleted (🗑).'));
     for (const f of SHELVED_LEVEL_FILES)
       kids.push(
         row(
@@ -1208,6 +1380,7 @@ export class Editor {
           '–',
           small('⤒ 1', 'Put in the game as level 1', () => void this.setOrder([f, ...LEVEL_FILES], 'Now level 1.')),
           small('+ end', 'Put in the game as the last level', () => void this.setOrder([...LEVEL_FILES, f], `Now level ${LEVEL_FILES.length + 1}.`)),
+          small('🗑', 'Delete this level for good', () => void this.deleteLevel(f)),
         ),
       );
   }
@@ -1263,6 +1436,16 @@ function el(tag: string, attrs: Record<string, string>, ...kids: (string | Node)
 
 function isTextField(t: EventTarget | null): boolean {
   return t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement;
+}
+
+/**
+ * The file a resumed session should save to. If its file was renamed or removed outside this tab
+ * (another save, a cleanup), follow the level by its name rather than recreating the old file.
+ */
+function fileStillThere(file: string | null, name: string): string | null {
+  if (!file || levelFile(file)) return file;
+  const same = ALL_LEVEL_FILES.filter((f) => levelFile(f)?.name === name);
+  return same.length === 1 ? same[0] : null;
 }
 
 function loadSession(): Session | null {

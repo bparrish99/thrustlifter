@@ -4,6 +4,7 @@ import { Game, STEP, TANK_H, type FrameInput } from './game';
 import provingGround from './levels/proving-ground.json';
 import type { LevelData } from './level';
 import { deg, dist, distPointSegment, segmentsIntersect } from './math';
+import { tankOrbConflict } from './editor/tools';
 import { LEVELS, levelFile } from './levels';
 
 // The shipped levels by file, so these tests don't depend on the play order (the owner reorders it).
@@ -478,34 +479,186 @@ describe('Deep Caverns is flyable', () => {
 });
 
 describe('checkpoints (internal)', () => {
-  it('dying after delivery respawns you hovering above the bowl, held until you touch the controls', () => {
-    const g = new Game(provingGround as LevelData);
-    g.orb.delivered = true;
+  const crashAt = (g: Game, x: number, y: number) => {
     g.heli.landed = false; g.onLaunchPad = false;
-    g.heli.pos = { x: 700, y: 600 };
-    g.heli.vel = { x: 0, y: 400 };
+    g.heli.pos = { x, y };
+    g.heli.vel = { x: 0, y: 900 };
     for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60); // crash, then wait out the respawn
-    expect(g.phase).toBe('playing');
-    expect(g.held).toBe(true);
-    expect(g.heli.landed).toBe(false);
-    expect(Math.abs(g.heli.pos.x - g.level.bowl.cx)).toBeLessThan(1);
+  };
+  /** Proving Ground with three checkpoints spread along it. */
+  const threeCps = (): LevelData => ({
+    ...(provingGround as LevelData),
+    checkpoints: [
+      { x: 1300, y: 500, fuel: 30 },
+      { x: 2600, y: 250, fuel: 35 },
+      { x: 3700, y: 626, fuel: 40 },
+    ],
+  });
+
+  it('you respawn at whichever checkpoint is closest to where you died, held until you touch the controls', () => {
+    for (const [x, y, want] of [[1400, 700, 0], [2500, 650, 1], [3600, 780, 2]] as const) {
+      const g = new Game(threeCps());
+      crashAt(g, x, y);
+      expect(g.phase).toBe('playing');
+      expect(g.held).toBe(true);
+      const cp = g.level.data.checkpoints![want];
+      expect(g.heli.pos.x, `died at ${x}`).toBeCloseTo(cp.x, 0);
+      expect(g.heli.pos.y, `died at ${x}`).toBeCloseTo(cp.y, 0);
+    }
+  });
+
+  it('held at a checkpoint: no gravity until you touch a control', () => {
+    const g = new Game(threeCps());
+    crashAt(g, 3600, 780);
     const y0 = g.heli.pos.y;
     for (let i = 0; i < 60; i++) g.update(idle, 1 / 60);
-    expect(g.heli.pos.y).toBe(y0); // hangs in place, no gravity
+    expect(g.heli.pos.y).toBe(y0); // hangs in place
     g.update({ ...idle, tiltAxis: 1 }, 1 / 60);
     expect(g.held).toBe(false);
     for (let i = 0; i < 30; i++) g.update(idle, 1 / 60);
     expect(g.heli.pos.y).toBeGreaterThan(y0); // now gravity applies
   });
 
-  it('dying before delivery still sends you back to the launch pad', () => {
-    const g = new Game(provingGround as LevelData);
+  it('dying closest to the launch pad puts you back on it (before or after delivery)', () => {
+    for (const delivered of [false, true]) {
+      const g = new Game(threeCps());
+      g.orb.delivered = delivered;
+      crashAt(g, 600, 600);
+      expect(g.heli.landed).toBe(true);
+      expect(g.held).toBe(false);
+    }
+  });
+
+  it('each respawn point tops you up to its own fuel minimum', () => {
+    const g = new Game(threeCps());
+    g.fuel = 0;
+    crashAt(g, 2500, 650);
+    expect(g.fuel).toBeCloseTo(35, 0);
+  });
+
+  it('"closest" means by flying distance: a checkpoint behind a wall loses to a farther open one', () => {
+    // a tall wall of rock between the death spot and a checkpoint that is closer as the crow flies
+    const base = threeCps();
+    const data: LevelData = {
+      ...base,
+      terrain: [...base.terrain, [1900, 860, 1900, -1100, 1960, -1100, 1960, 860]],
+      checkpoints: [
+        { x: 2050, y: 600, fuel: 30 }, // 170 away, but the wall is in between
+        { x: 1500, y: 450, fuel: 30 }, // 430 away, same side
+      ],
+    };
+    const g = new Game(data);
+    crashAt(g, 1880 - 40, 700);
+    expect(g.heli.pos.x).toBeCloseTo(1500, 0);
+  });
+});
+
+describe('dying with the orb', () => {
+  const crashNow = (g: Game) => (g as unknown as { crash(r: string): void }).crash('TEST');
+  const wait = (g: Game, s: number, input: Partial<FrameInput> = {}) => {
+    for (let i = 0; i < s * 60; i++) g.update({ ...idle, ...input }, 1 / 60);
+  };
+  const carrying = (data: LevelData, at: { x: number; y: number }) => {
+    const g = new Game(data);
     g.heli.landed = false; g.onLaunchPad = false;
-    g.heli.pos = { x: 700, y: 600 };
-    g.heli.vel = { x: 0, y: 400 };
-    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
-    expect(g.heli.landed).toBe(true);
+    g.heli.pos = { ...at };
+    g.orb.attached = true;
+    g.orb.pos = { x: at.x, y: at.y + 16 + cfg.rodLength };
+    return g;
+  };
+  const withCps = (cps: { x: number; y: number }[]): LevelData => ({ ...(provingGround as LevelData), checkpoints: cps.map((c) => ({ ...c, fuel: 30 })) });
+
+  it('you respawn at the nearest checkpoint still holding it, both frozen until you touch a control', () => {
+    const g = carrying(withCps([{ x: 1300, y: 450 }, { x: 2600, y: 250 }]), { x: 2500, y: 500 });
+    crashNow(g);
+    wait(g, 3);
+    expect(g.phase).toBe('playing');
+    expect(g.held).toBe(true);
+    expect(g.heli.pos.x).toBeCloseTo(2600, 0);
+    expect(g.orb.attached).toBe(true);
+    const o0 = { ...g.orb.pos };
+    expect(o0.y).toBeGreaterThan(g.heli.pos.y + cfg.rodLength); // hanging below
+    wait(g, 1);
+    expect(g.orb.pos).toEqual(o0); // frozen with you
+    wait(g, 0.5, { rotor: 1 });
     expect(g.held).toBe(false);
+    expect(g.orb.attached).toBe(true); // still carrying once you fly off
+  });
+
+  it('never respawns you on the launch pad while carrying, even when it is the nearest point', () => {
+    const g = carrying(withCps([{ x: 2600, y: 250 }]), { x: 450, y: 500 });
+    crashNow(g);
+    wait(g, 3);
+    expect(g.heli.landed).toBe(false);
+    expect(g.heli.pos.x).toBeCloseTo(2600, 0);
+    expect(g.orb.attached).toBe(true);
+  });
+
+  it('gates sealed when you grabbed the orb stay sealed, and you never respawn on the wrong side of one', () => {
+    // a gate across the whole level at x 1900..1960 that seals on pickup; you die on its far side
+    const base = withCps([{ x: 1700, y: 400 }, { x: 2300, y: 400 }]);
+    const data: LevelData = { ...base, gates: [{ poly: [1900, 860, 1900, -1300, 1960, -1300, 1960, 860], closes: 'pickup' }] };
+    const g = carrying(data, { x: 2000, y: 600 }); // 300 from the gated-off checkpoint, 300 from the other
+    g.level.gates[0].open = false; // sealed when you grabbed the orb
+    g.deathPos = null;
+    g.heli.pos = { x: 1990, y: 600 }; // just past the gate: nearer the far-side checkpoint as the crow flies
+    crashNow(g);
+    wait(g, 3);
+    expect(g.level.gates[0].open).toBe(false);
+    expect(g.heli.pos.x).toBeCloseTo(2300, 0);
+  });
+
+  it('carrying: skips a checkpoint too close to the ground for the orb to hang', () => {
+    // a checkpoint 60 above the ground (no room for the 110 rod) right where you die, and a roomy one farther off
+    const g = carrying(withCps([{ x: 2200, y: 820 }, { x: 2600, y: 250 }]), { x: 2250, y: 600 });
+    crashNow(g);
+    wait(g, 3);
+    expect(g.heli.pos.x).toBeCloseTo(2600, 0);
+  });
+
+  it('dying with the orb after it is lost or delivered is unaffected: not carrying, normal respawn', () => {
+    const g = new Game(withCps([{ x: 2600, y: 250 }]));
+    g.heli.landed = false; g.onLaunchPad = false;
+    g.heli.pos = { x: 450, y: 500 };
+    crashNow(g);
+    wait(g, 3);
+    expect(g.heli.landed).toBe(true); // nearest is the pad
+    expect(g.orb.attached).toBe(false);
+    expect(g.orb.pos).toEqual(g.orb.home);
+  });
+});
+
+describe('gates that seal on delivery', () => {
+  const gated = (poly: number[]): LevelData => ({ ...(provingGround as LevelData), gates: [{ poly, closes: 'delivery' }] });
+  const deliver = (g: Game) => (g as unknown as { deliver(): void }).deliver();
+  const step = (g: Game, s: number) => {
+    for (let i = 0; i < s * 60; i++) {
+      g.heli.vel = { x: 0, y: 0 };
+      g.update(idle, 1 / 60);
+    }
+  };
+
+  it('start open, seal when the orb is delivered, with the gate sound', () => {
+    const g = new Game(gated([1000, 600, 1060, 600, 1060, 860, 1000, 860]));
+    expect(g.level.gates[0].open).toBe(true);
+    g.heli.landed = false; g.onLaunchPad = false; g.held = true;
+    g.heli.pos = { x: 1500, y: 300 };
+    deliver(g);
+    expect(g.level.gates[0].open).toBe(false);
+    expect(g.events.some((e) => e.type === 'gate')).toBe(true);
+  });
+
+  it('a gate you are inside waits until you are clear before sealing', () => {
+    const g = new Game(gated([1000, 200, 1300, 200, 1300, 600, 1000, 600]));
+    g.heli.landed = false; g.onLaunchPad = false; g.held = true; // hovering, frozen, inside the gate
+    g.heli.pos = { x: 1150, y: 400 };
+    deliver(g);
+    step(g, 0.5);
+    expect(g.level.gates[0].open).toBe(true); // still open: you're in it
+    expect(g.phase).toBe('playing');
+    g.heli.pos = { x: 1500, y: 400 }; // fly out
+    step(g, 0.2);
+    expect(g.level.gates[0].open).toBe(false);
   });
 });
 
@@ -673,11 +826,7 @@ describe('survivors', () => {
 describe('level sanity', () => {
   it('no fuel tank sits close enough to an orb for Space to reach both', () => {
     for (const data of LEVELS) {
-      for (const t of data.fuelTanks ?? []) {
-        // to use a tank you must be within 45 sideways of it; the tether reaches rodLength
-        const d = Math.abs(t.x - data.orb.x);
-        expect(d, `${data.name}: tank at ${t.x},${t.y} is ${Math.round(d)} sideways from the orb`).toBeGreaterThan(cfg.rodLength + 45 + 40);
-      }
+      for (const t of data.fuelTanks ?? []) expect(tankOrbConflict(t, data.orb, cfg), `${data.name}: tank at ${t.x},${t.y}`).toBe(false);
     }
   });
 });
@@ -775,7 +924,7 @@ describe('guard helicopters', () => {
     expect(g.enemies.length).toBe(1); // second guard
     g.destroyEnemy(g.enemies[0]);
     hoverAt(g, 1300, 300, cfg.enemyRespawn * 2);
-    expect(g.enemies.length).toBe(0); // only 2 guards on this pad
+    expect(g.enemies.filter((e) => e.alive).length).toBe(0); // only 2 guards on this pad
   });
 
   it('the next guard waits to appear until you are clear of its pad', () => {
@@ -859,20 +1008,15 @@ describe('no soft-locks', () => {
   it('each level defines fuel minimums for its respawn points', () => {
     for (const d of LEVELS) {
       expect(d.startFuelMin, d.name).toBeGreaterThan(0);
-      expect(d.checkpoints?.find((c) => c.after === 'delivery')?.fuel, d.name).toBeGreaterThan(0);
+      for (const c of d.checkpoints ?? []) expect(c.fuel, `${d.name}: checkpoint at ${c.x},${c.y}`).toBeGreaterThan(0);
     }
   });
 
-  it('after delivery you respawn with at least that checkpoint\'s fuel', () => {
-    const g = new Game(DEEP_CAVERNS);
-    g.orb.delivered = true;
-    g.fuel = 0;
-    g.heli.landed = false; g.onLaunchPad = false;
-    g.heli.pos = { x: 860, y: 700 };
-    g.heli.vel = { x: 0, y: 900 };
-    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
-    expect(g.held).toBe(true);
-    expect(g.fuel).toBeGreaterThanOrEqual(DEEP_CAVERNS.checkpoints![0].fuel! - 0.01);
+  it('a level with no checkpoints still has one, above the bowl', () => {
+    const g = new Game({ ...(provingGround as LevelData), checkpoints: [] });
+    const cps = g.checkpoints();
+    expect(cps.length).toBe(1);
+    expect(cps[0].x).toBeCloseTo(g.level.bowl.cx, 0);
   });
 });
 
