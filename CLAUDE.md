@@ -11,7 +11,7 @@ terms of how the game plays, not implementation.
 - **Tuning:** the owner tunes with the in-game panel (T) and pastes the "copy settings JSON". Bake the values into `DEFAULTS` in `src/config.ts` and report what changed in a table. The browser saves *all* tuning values, so when you deliberately change a default the owner already has saved, add an entry to `MIGRATIONS` in `config.ts` or the change won't reach them.
 - **Verify, don't guess:** run `npm test` and `npx tsc --noEmit` after changes, and look at screenshots (`npm run shots`, or a small playwright script in the scratchpad) for anything visual. You can't hear audio, so measure sound levels in the browser and say so.
 - **Commit and push only when asked** (remote: github.com/bparrish99/thrustlifter, branch `main`; commits use the owner's GitHub no-reply email).
-- **Show, don't tell:** no text on level elements; minimal centre messages (see DESIGN.md).
+- **Show, don't tell:** no text on level elements; minimal centre messages (see DESIGN.md). The one exception is the level-1 tutorial hints.
 - Keep `DESIGN.md` current with every decision, including what was tried and rejected.
 
 ## Commands
@@ -27,8 +27,10 @@ terms of how the game plays, not implementation.
 - `src/game.ts`: game state and rules: collision, landing, pickup, delivery, weapons, particles. Fixed 240 Hz substeps.
 - `src/render.ts`: all drawing (faux-vector glow). No game logic.
 - `src/input.ts`: keyboard + gamepad → `FrameInput`
-- `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates, tanks, balloons, survivors, checkpoints); play order in `src/levels/order.json` (index.ts globs the folder). Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
-- `src/editor/`: in-game level editor (E). `tools.ts` = pure helpers (snapping, validation, JSON formatting, tight-spot analysis, tested); `editor.ts` = UI. `vite.config.ts` adds the dev-only `POST /__editor/save` endpoint that writes level files.
+- `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates, tanks, balloons, survivors, checkpoints); play order in `src/levels/order.json` (index.ts globs the folder; files not in order.json are "shelved": kept and editable, not played). Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
+- `src/editor/`: in-game level editor (E). `tools.ts` = pure helpers (snapping, validation, JSON formatting, tight-spot analysis, tested); `editor.ts` = UI. `vite.config.ts` adds dev-only endpoints: `POST /__editor/save` writes level files, `POST /__editor/order` rewrites the play order.
+- `src/minimap.ts`: which part of a level the minimap frames (drawn by `drawMinimap` in render.ts)
+- `src/tutorial.ts`: first-level hints (which, when, where they point); drawn by `drawTip` in render.ts
 - `src/audio.ts`: procedural rotor sound and event sound effects (game pushes `GameEvent`s; `main.ts` drains them each frame)
 
 ## Where things stand

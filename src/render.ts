@@ -1,5 +1,7 @@
 import { config } from './config';
+import { minimapBounds, type MapBounds } from './minimap';
 import { BALLOON_R, COLORS, FUEL_TICKS, POINTS, SHIELD_RADIUS, balloonGun, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, toWorldPoint, turretCentre, type Game } from './game';
+import type { Level } from './level';
 import { clamp, lerp, type Vec } from './math';
 import { ANCHOR, BODY, MAST, NOSE, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, SKID_Y, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
 
@@ -80,6 +82,9 @@ export class Renderer {
   private clock = 0;
   private frameDt = 0;
   private fuelNeedle = 1;
+  /** Where the HUD put the fuel gauge and its two boxes this frame (screen px), for hints to avoid/point at. */
+  private gaugeRect = { x: 0, y: 0, w: 0, h: 0 };
+  private hudRects: { l: number; r: number; t: number; b: number }[] = [];
   private scorePop = 0;
   private lastScore = 0;
 
@@ -956,110 +961,132 @@ export class Renderer {
    * a specular glint and a halo; unlit ones are dark lenses that still catch a reflection.
    * Red at the low end, then amber, yellow, and green at the full end. Blinks when low; a light sweeps along it while refuelling.
    */
-  private drawFuelGauge(game: Game): void {
+  /**
+   * Vertical LED fuel gauge (bottom-left, in its own box): a recessed strip of LED lenses, empty at
+   * the bottom, full at the top. Lit LEDs have a hot core, a specular glint and a halo; unlit lenses
+   * still catch the light. Red to amber to yellow to green; blinks when low; a light sweeps up it
+   * while refuelling.
+   */
+  private drawFuelGauge(game: Game, x0: number, y0: number, w: number, h: number): void {
     const ctx = this.ctx;
     const k = clamp(game.fuel / config.fuelMax, 0, 1);
     this.fuelNeedle += (k - this.fuelNeedle) * (1 - Math.exp(-6 * this.frameDt));
     const low = k < 0.2;
     const blinkOn = Math.sin(this.clock * 9) > -0.1;
     const segs = FUEL_TICKS;
-    const ledW = 20;
-    const ledH = 32;
-    const gap = 6;
-    const innerW = segs * ledW + (segs - 1) * gap;
-    const pad = 12;
-    const w = innerW + pad * 2;
-    const h = ledH + pad * 2;
-    const x0 = this.w / 2 - w / 2;
-    const y0 = this.h - h - 22;
+    const pad = 4;
+    const gap = 2;
+    const ledW = w - pad * 2;
+    const ledH = (h - pad * 2 - gap * (segs - 1)) / segs;
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
-    // housing: dark recessed panel with a thin bevelled frame
-    const body = ctx.createLinearGradient(0, y0, 0, y0 + h);
-    body.addColorStop(0, '#20232c');
-    body.addColorStop(0.5, '#0b0c11');
-    body.addColorStop(1, '#16181f');
-    ctx.fillStyle = body;
-    roundRect(ctx, x0, y0, w, h, 8);
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    roundRect(ctx, x0, y0, w, h, 4);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
     ctx.lineWidth = 1;
-    roundRect(ctx, x0 + 0.5, y0 + 0.5, w - 1, h - 1, 8);
+    roundRect(ctx, x0 + 0.5, y0 + 0.5, w - 1, h - 1, 4);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    roundRect(ctx, x0 + pad - 4, y0 + pad - 4, innerW + 8, ledH + 8, 4);
-    ctx.fill();
     ctx.restore();
 
     const lit = this.fuelNeedle * segs;
     const sweep = game.refueling ? ((this.clock * 1.6) % 1.4) * segs : -99;
     for (let i = 0; i < segs; i++) {
-      const lx = x0 + pad + i * (ledW + gap);
-      const ly = y0 + pad;
+      const lx = x0 + pad;
+      const ly = y0 + h - pad - (i + 1) * ledH - i * gap; // i = 0 at the bottom
       const v = i / (segs - 1);
       const [cr, cg, cb] = v < 0.2 ? [255, 60, 50] : v < 0.45 ? [255, 160, 40] : v < 0.75 ? [255, 225, 70] : [80, 255, 120];
       let on = clamp(lit - i, 0, 1);
       if (low && !blinkOn) on *= 0.25;
       const sw = Math.max(0, 1 - Math.abs(sweep - i) / 2.5) * 0.6;
       const glowK = on > 0 ? on : sw * 0.5;
+      const cx = lx + ledW / 2;
+      const cy = ly + ledH / 2;
       ctx.save();
-      // lens base
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = `rgb(${Math.round(cr * 0.12)},${Math.round(cg * 0.1)},${Math.round(cb * 0.1)})`;
-      roundRect(ctx, lx, ly, ledW, ledH, 3);
+      roundRect(ctx, lx, ly, ledW, ledH, 2);
       ctx.fill();
       if (glowK > 0) {
         ctx.globalCompositeOperation = 'lighter';
-        // halo bleeding past the lens
-        const halo = ctx.createRadialGradient(lx + ledW / 2, ly + ledH / 2, 2, lx + ledW / 2, ly + ledH / 2, ledH * 1.1);
-        halo.addColorStop(0, `rgba(${cr},${cg},${cb},${0.35 * glowK})`);
+        const halo = ctx.createRadialGradient(cx, cy, 1, cx, cy, ledW * 0.9);
+        halo.addColorStop(0, `rgba(${cr},${cg},${cb},${0.3 * glowK})`);
         halo.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
         ctx.fillStyle = halo;
-        ctx.fillRect(lx - ledH, ly - ledH * 0.6, ledW + ledH * 2, ledH * 2.2);
-        // the lit lens: hot core fading to the edges
-        const core = ctx.createRadialGradient(lx + ledW / 2, ly + ledH * 0.45, 1, lx + ledW / 2, ly + ledH / 2, ledH * 0.7);
+        ctx.fillRect(lx - ledW * 0.5, ly - ledH, ledW * 2, ledH * 3);
+        const core = ctx.createRadialGradient(cx, cy, 1, cx, cy, ledW * 0.6);
         core.addColorStop(0, `rgba(255,${Math.min(255, cg + 80)},${Math.min(255, cb + 120)},${glowK})`);
         core.addColorStop(0.45, `rgba(${cr},${cg},${cb},${0.95 * glowK})`);
         core.addColorStop(1, `rgba(${Math.round(cr * 0.5)},${Math.round(cg * 0.4)},${Math.round(cb * 0.3)},${0.8 * glowK})`);
         ctx.fillStyle = core;
-        roundRect(ctx, lx, ly, ledW, ledH, 3);
+        roundRect(ctx, lx, ly, ledW, ledH, 2);
         ctx.fill();
       }
-      // specular glint on the lens (always there; brighter when lit)
+      // specular glint along the top of each lens (always there; brighter when lit)
       ctx.globalCompositeOperation = 'lighter';
-      const spec = ctx.createLinearGradient(lx, ly, lx, ly + ledH * 0.5);
-      spec.addColorStop(0, `rgba(255,255,255,${0.12 + 0.35 * glowK})`);
-      spec.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = spec;
-      roundRect(ctx, lx + 2, ly + 1.5, ledW - 4, ledH * 0.42, 2);
+      ctx.fillStyle = `rgba(255,255,255,${0.1 + 0.3 * glowK})`;
+      roundRect(ctx, lx + 2, ly + 0.8, ledW - 4, Math.max(1, ledH * 0.35), 1);
       ctx.fill();
-      ctx.fillStyle = `rgba(255,255,255,${0.25 + 0.5 * glowK})`;
+      ctx.fillStyle = `rgba(255,255,255,${0.2 + 0.5 * glowK})`;
       ctx.beginPath();
-      ctx.ellipse(lx + ledW * 0.32, ly + ledH * 0.2, 1.6, 2.6, -0.3, 0, Math.PI * 2);
+      ctx.ellipse(lx + ledW * 0.25, ly + ledH * 0.35, 1.8, Math.max(0.8, ledH * 0.18), 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
-    text(ctx, 'E', x0 - 22, y0 + h / 2, 24, '#ff6a6a', 'center', 0.9);
-    text(ctx, 'F', x0 + w + 22, y0 + h / 2, 24, '#50ff78', 'center', 0.9);
+    text(ctx, 'F', x0 + w + 13, y0 + 8, 14, '#50ff78', 'center', 0.85);
+    text(ctx, 'E', x0 + w + 13, y0 + h - 8, 14, '#ff6a6a', 'center', 0.85);
   }
 
-  /** The end-of-level bonus tally, big in the middle of the screen. */
+  /** The end-of-level bonus tally, big in the middle of the screen: rescues (if any), time, fuel. */
   private drawTally(game: Game, y: number): void {
     const t = game.tally!;
-    const ctx = this.ctx;
-    const timeOn = t.stage === 'time' || t.stage === 'intro' || t.stage === 'pause';
     const pulse = 1 + 0.06 * Math.sin(this.clock * 30);
+    let row = y + 40;
+    // rescue bonus line: a hostage per rescue, each lighting up (with a pop) as it's paid
+    if (t.rescuesTotal > 0) {
+      const on = t.stage === 'rescue' || (t.stage === 'intro' && t.rescues > 0);
+      const paid = t.rescuesTotal - t.rescues;
+      text(this.ctx, 'RESCUE BONUS', this.w / 2 - 30, row, 30, COLORS.survivor, 'right', on ? 1 : 0.45);
+      for (let i = 0; i < t.rescuesTotal; i++) {
+        const lit = i < paid;
+        const justPaid = lit && i === paid - 1 && t.stage === 'rescue' ? Math.max(0, 1 - t.t / 0.35) : 0;
+        this.drawHostageIcon(this.w / 2 + 44 + i * 40, row + 22, 2.1 * (1 + justPaid * 0.35), lit ? 1 : 0.3);
+      }
+      const after = this.w / 2 + 44 + t.rescuesTotal * 40;
+      text(this.ctx, `${paid} × ${POINTS.rescue}`, after, row, 52 * (on && t.t < 0.25 && paid > 0 ? pulse : 1), paid > 0 ? COLORS.survivor : 'rgba(157,255,157,0.45)', 'left', on ? 1 : 0.6);
+      row += 70;
+    }
     // time bonus line
+    const timeOn = t.stage === 'time' || t.stage === 'pause' || (t.stage === 'intro' && t.rescuesTotal === 0);
     const tt = game.bonusTime;
     const clock = `${Math.floor(tt / 60)}:${(tt % 60).toFixed(1).padStart(4, '0')}`;
-    text(ctx, 'TIME BONUS', this.w / 2 - 30, y + 40, 30, C.hud, 'right', timeOn ? 1 : 0.45);
-    text(ctx, clock, this.w / 2 + 30, y + 40, 52 * (t.stage === 'time' ? pulse : 1), t.tenths > 0 ? '#3dff8a' : 'rgba(61,255,138,0.45)', 'left');
+    text(this.ctx, 'TIME BONUS', this.w / 2 - 30, row, 30, C.hud, 'right', timeOn ? 1 : 0.45);
+    text(this.ctx, clock, this.w / 2 + 30, row, 52 * (t.stage === 'time' ? pulse : 1), t.tenths > 0 ? '#3dff8a' : 'rgba(61,255,138,0.45)', 'left');
+    row += 70;
     // fuel bonus line
     const fuelOn = t.stage === 'fuel';
-    text(ctx, 'FUEL BONUS', this.w / 2 - 30, y + 110, 30, C.fuelPad, 'right', fuelOn ? 1 : 0.45);
-    text(ctx, `${t.ticks} × ${POINTS.perFuelTick}`, this.w / 2 + 30, y + 110, 52 * (fuelOn ? pulse : 1), t.ticks > 0 ? C.fuelPad : 'rgba(255,225,77,0.45)', 'left');
-    void ctx;
+    text(this.ctx, 'FUEL BONUS', this.w / 2 - 30, row, 30, C.fuelPad, 'right', fuelOn ? 1 : 0.45);
+    text(this.ctx, `${t.ticks} × ${POINTS.perFuelTick}`, this.w / 2 + 30, row, 52 * (fuelOn ? pulse : 1), t.ticks > 0 ? C.fuelPad : 'rgba(255,225,77,0.45)', 'left');
+  }
+
+  /** A little hostage (the same stick figure as in the level, arm raised) for the rescued count. */
+  private drawHostageIcon(x: number, y: number, k: number, alpha = 1): void {
+    const p = new Path2D();
+    const P = (px: number, py: number): [number, number] => [x + px * k, y + py * k];
+    const line = (a: [number, number], b: [number, number]) => {
+      p.moveTo(...a);
+      p.lineTo(...b);
+    };
+    line(P(0, -7), P(0, -15)); // body
+    const [hx, hy] = P(0, -18.5);
+    p.moveTo(hx + 2.6 * k, hy);
+    p.arc(hx, hy, 2.6 * k, 0, Math.PI * 2); // head
+    line(P(0, -7), P(-3, 0)); // legs
+    line(P(0, -7), P(3, 0));
+    line(P(0, -14), P(5, -21)); // arm up, waving for help
+    line(P(0, -14), P(-4, -9));
+    glow(this.ctx, p, COLORS.survivor, 1.2, 0.95 * alpha * config.glow);
   }
 
   /** A tiny helicopter silhouette for the lives display. */
@@ -1312,6 +1339,211 @@ export class Renderer {
 
   // -------------------------------------------------------------- HUD
 
+  private minimapCache: { level: Level; w: number; h: number; dpr: number; img: HTMLCanvasElement; bounds: MapBounds } | null = null;
+
+  /**
+   * Whole-level minimap, lower right, in neon corner brackets like the other HUD panels. No text:
+   * rock in miniature, your heli (blinking), the orb (travels with you when carried), bowl, pads,
+   * fuel tanks, closed gates (no enemies, on purpose), and a faint box for what's on screen.
+   */
+  private drawMinimap(game: Game): void {
+    const ctx = this.ctx;
+    const level = game.level;
+    const maxW = Math.min(300, this.w * 0.25);
+    const maxH = 150;
+    let cache = this.minimapCache;
+    if (!cache || cache.level !== level || cache.dpr !== this.dpr || cache.w > maxW + 0.5 || (cache.w < maxW - 0.5 && cache.h < maxH - 0.5)) {
+      const bounds = minimapBounds(level.data);
+      const k = Math.min(maxW / (bounds.x1 - bounds.x0), maxH / (bounds.y1 - bounds.y0));
+      const w = (bounds.x1 - bounds.x0) * k;
+      const h = (bounds.y1 - bounds.y0) * k;
+      const img = document.createElement('canvas');
+      img.width = Math.ceil(w * this.dpr);
+      img.height = Math.ceil(h * this.dpr);
+      const c = img.getContext('2d')!;
+      c.scale(this.dpr * k, this.dpr * k);
+      c.translate(-bounds.x0, -bounds.y0);
+      const paths = level.polygons.map((poly) => {
+        const p = new Path2D();
+        poly.forEach((v, i) => (i ? p.lineTo(v.x, v.y) : p.moveTo(v.x, v.y)));
+        p.closePath();
+        return p;
+      });
+      c.fillStyle = 'rgba(20,40,90,0.95)';
+      for (const p of paths) c.fill(p);
+      c.strokeStyle = C.terrain;
+      c.globalAlpha = 0.8;
+      c.lineWidth = 1.4 / k;
+      c.lineJoin = 'round';
+      for (const p of paths) c.stroke(p);
+      cache = this.minimapCache = { level, w, h, dpr: this.dpr, img, bounds };
+    }
+    const { w, h, bounds } = cache;
+    const k = w / (bounds.x1 - bounds.x0);
+    const x0 = this.w - w - 30;
+    const y0 = this.h - h - 26;
+    const toMap = (p: Vec) => ({ x: x0 + (p.x - bounds.x0) * k, y: y0 + clamp(p.y - bounds.y0, 0, bounds.y1 - bounds.y0) * k });
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(2,1,9,0.72)';
+    ctx.fillRect(x0 - 6, y0 - 6, w + 12, h + 12);
+    ctx.drawImage(cache.img, x0, y0, w, h);
+    ctx.beginPath();
+    ctx.rect(x0, y0, w, h);
+    ctx.clip();
+
+    // what's on screen
+    const tl = toMap(this.screenToWorld(0, 0));
+    const br = toMap(this.screenToWorld(this.w, this.h));
+    ctx.strokeStyle = 'rgba(159,232,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+
+    // closed gates
+    ctx.strokeStyle = C.gate;
+    ctx.lineWidth = 2;
+    for (const g of level.gates) {
+      if (g.fade > 0.5) continue;
+      ctx.beginPath();
+      g.pts.forEach((v, i) => {
+        const m = toMap(v);
+        i ? ctx.lineTo(m.x, m.y) : ctx.moveTo(m.x, m.y);
+      });
+      ctx.closePath();
+      ctx.stroke();
+    }
+
+    const pip = (p: Vec, color: string, r: number, square = false) => {
+      const m = toMap(p);
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 6;
+      if (square) ctx.fillRect(m.x - r, m.y - r, r * 2, r * 2);
+      else {
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+    const bar = (x: number, y: number, wd: number, color: string) => {
+      const a = toMap({ x, y });
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 6;
+      ctx.fillRect(a.x, a.y - 3, Math.max(4, wd * k), 3);
+    };
+    for (const p of level.data.pads) bar(p.x, p.y, p.w, p.kind === 'start' ? C.startPad : C.padSafe);
+    bar(level.bowl.cx - 40, level.bowl.rimY + 20, 80, C.bowl);
+    for (const t of game.fuelTanks) if (t.alive) pip({ x: t.pos.x, y: t.pos.y - 10 }, COLORS.fuel, 2, true);
+    // enemies are deliberately left off (owner's call): you find them by flying
+    const orb = game.orb;
+    if (!orb.delivered && orb.pos.x > -9999) pip(orb.pos, COLORS.orb, 3);
+    if (game.alive && Math.sin(this.clock * 8) > -0.6) pip(game.heli.pos, COLORS.heli, 3.2);
+    ctx.restore();
+    brackets(ctx, x0 - 12, y0 - 12, w + 24, h + 24, C.hud, 0.6);
+  }
+
+  /**
+   * First-level hints, each floating above what it's about with a little arrow pointing down at it.
+   * Hints are independent, so several can be up at once: a box that would overlap one already placed
+   * (earlier hints keep their spot) stacks above it, with a thin line down to its target.
+   */
+  private drawTips(game: Game): void {
+    const tips = game.tutorial?.views ?? [];
+    const ctx = this.ctx;
+    const size = 22;
+    const lineH = size * 1.25;
+    const bob = Math.sin(this.clock * 3) * 4; // float gently (all together, so stacks stay neat)
+    const placed: { l: number; r: number; t: number; b: number }[] = [];
+    for (const tip of tips) {
+      if (tip.alpha <= 0) continue;
+      let ax: number;
+      let ay: number; // the point the arrow touches (screen px)
+      // hints float above what they point at (things in the world, or the fuel gauge) with an arrow down
+      const up = false; // (an up-pointing hint below a HUD box is supported, but nothing uses it now)
+      if (tip.at === 'fuelGauge') {
+        // sits above the bottom-left gauge, pointing down at it
+        ax = this.gaugeRect.x + this.gaugeRect.w / 2;
+        ay = this.gaugeRect.y - 18;
+      } else {
+        const p = this.worldToScreen(tip.at.world);
+        ax = p.x;
+        ay = p.y - tip.at.lift * this.viewScale;
+        if (ax < -40 || ax > this.w + 40 || ay < 40 || ay > this.h + 40) continue; // off screen
+      }
+      ctx.save();
+      ctx.font = `bold ${size}px ${FONT}`;
+      const tw = Math.max(...tip.lines.map((l) => ctx.measureText(l).width));
+      ctx.restore();
+      const boxW = tw + 36;
+      const boxH = tip.lines.length * lineH + 16;
+      // where the box wants to be: just above its target (or just below, pointing up)
+      const aim = up ? ay + 14 + bob : ay - 16 + bob - boxH;
+      let cx = clamp(ax, boxW / 2 + 12, this.w - boxW / 2 - 12);
+      // never cover a HUD box: slide sideways clear of it (never up or down, which would leave the
+      // box far from its target with a long line to it)
+      for (const o of this.hudRects) {
+        const overlaps = cx - boxW / 2 < o.r + 8 && cx + boxW / 2 > o.l - 8 && aim + boxH > o.t - 6 && aim < o.b + 6;
+        if (!overlaps) continue;
+        cx = (o.l + o.r) / 2 < this.w / 2 ? o.r + 10 + boxW / 2 : o.l - 10 - boxW / 2;
+      }
+      const l = cx - boxW / 2;
+      const r = cx + boxW / 2;
+      const hits = (o: { l: number; r: number; t: number; b: number }, top: number, gapY: number) =>
+        l < o.r + 8 && r > o.l - 8 && top + boxH > o.t - gapY && top < o.b + gapY;
+      const wantTop = aim;
+      // stack clear of hints already placed: upward for down-pointing hints, downward for up-pointing ones
+      let top = wantTop;
+      for (let moved = true; moved; ) {
+        moved = false;
+        for (const o of placed) {
+          if (hits(o, top, 22)) {
+            top = up ? o.b + 22 : o.t - 22 - boxH;
+            moved = true;
+          }
+        }
+      }
+      const bottom = top + boxH;
+      placed.push({ l, r, t: top, b: bottom });
+      const a = tip.alpha;
+      ctx.save();
+      ctx.globalAlpha = a * 0.82;
+      ctx.fillStyle = '#05040f';
+      roundRect(ctx, l, top, boxW, boxH, 6);
+      ctx.fill();
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = COLORS.heli;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = COLORS.heli;
+      ctx.shadowBlur = 12;
+      ctx.stroke();
+      // arrow at the thing (a thin line first if the box got moved out of the way)
+      const tipX = clamp(ax, l + 14, r - 14);
+      const edge = up ? top : bottom; // the box edge facing the target
+      // the arrow sits where the box wanted to be; if the box had to move, a thin line joins them
+      const arrowBase = up ? aim : aim + boxH;
+      if (Math.abs(edge - arrowBase) > 0.5) {
+        ctx.globalAlpha = a * 0.6;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(tipX, edge);
+        ctx.lineTo(tipX, arrowBase);
+        ctx.stroke();
+        ctx.globalAlpha = a;
+      }
+      const dir = up ? -1 : 1;
+      ctx.beginPath();
+      ctx.moveTo(tipX - 10, arrowBase + dir);
+      ctx.lineTo(tipX, arrowBase + 13 * dir);
+      ctx.lineTo(tipX + 10, arrowBase + dir);
+      ctx.fillStyle = COLORS.heli;
+      ctx.fill();
+      ctx.restore();
+      tip.lines.forEach((ln, i) => text(ctx, ln, cx, top + 8 + lineH * (i + 0.5), size, i === 0 ? '#fff4b0' : C.hud, 'center', a));
+    }
+  }
+
   private drawHud(game: Game): void {
     const ctx = this.ctx;
     ctx.globalCompositeOperation = 'source-over';
@@ -1323,53 +1555,99 @@ export class Renderer {
     }
     this.scorePop = Math.max(0, this.scorePop - this.frameDt * 2.5);
 
-    // ---- top left: score + lives, in neon brackets
-    brackets(ctx, 14, 10, 380, 176, COLORS.heli, 0.6);
+    // ---- top left, one line: score then lives, in a compact translucent box
+    const rowH = 52;
+    const rowY = 10 + rowH / 2; // centre line of both top boxes
     const pop = this.scorePop;
-    text(ctx, String(game.score).padStart(6, '0'), 32, 60, 66 + pop * 12, pop > 0 ? '#fff4b0' : COLORS.heli, 'left');
-    text(ctx, 'SCORE', 36, 106, 20, C.hud, 'left', 0.85);
+    const lives = Math.max(0, game.lives);
     const lf = game.lifeFlash;
-    for (let i = 0; i < Math.max(0, game.lives); i++) this.drawLifeIcon(70 + i * 84, 148, 0.95 * (i === game.lives - 1 ? 1 + lf * 0.4 * Math.abs(Math.sin(this.clock * 10)) : 1));
-    if (lf > 0) text(ctx, '1UP!', 70 + game.lives * 84 - 14, 148, 34, '#3dff8a', 'left', Math.min(1, lf * 2));
+    const scoreStr = String(game.score).padStart(6, '0');
+    ctx.save();
+    ctx.font = `bold 32px ${FONT}`;
+    const scoreW = ctx.measureText(scoreStr).width;
+    ctx.restore();
+    const lifeX0 = 24 + scoreW + 42; // icon centres (each reaches ~22px left of its centre, tail first)
+    const lw = lifeX0 - 12 + (lives - 1) * 48 + 30 + (lf > 0 ? 64 : 0);
+    hudBox(ctx, 12, 10, lw, rowH, COLORS.heli);
+    text(ctx, scoreStr, 24, rowY + 1, 32 + pop * 6, pop > 0 ? '#fff4b0' : COLORS.heli, 'left');
+    for (let i = 0; i < lives; i++) this.drawLifeIcon(lifeX0 + i * 48, rowY + 3, 0.45 * (i === lives - 1 ? 1 + lf * 0.4 * Math.abs(Math.sin(this.clock * 10)) : 1));
+    if (lf > 0) text(ctx, '1UP!', lifeX0 + lives * 48 - 16, rowY, 20, '#3dff8a', 'left', Math.min(1, lf * 2));
 
-    // ---- top right: time, rescued, orb lamp, in neon brackets
-    brackets(ctx, this.w - 380, 10, 366, 196, C.hud, 0.6);
+    // ---- top right, one line: time bonus, hostage icon + rescued count, orb lamp (no labels)
     const t = game.bonusTime;
-    const mm = Math.floor(t / 60);
-    const ss = (t % 60).toFixed(1).padStart(4, '0');
+    const clockStr = `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
     const out = t <= 0;
-    text(ctx, `${mm}:${ss}`, this.w - 32, 58, 60, out ? 'rgba(159,232,255,0.4)' : C.hud, 'right');
-    text(ctx, 'TIME BONUS', this.w - 32, 100, 20, C.hud, 'right', out ? 0.35 : 0.85);
-    if (game.survivors.length) {
-      const saved = game.survivors.filter((s) => s.state === 'rescued').length;
-      text(ctx, `RESCUED ${saved}/${game.survivors.length}`, this.w - 32, 136, 28, COLORS.survivor, 'right', 1);
+    // hostages you're carrying right now, out of the level's total
+    const rescuedStr = game.survivors.length ? `${game.survivors.filter((s) => s.state === 'aboard').length}/${game.survivors.length}` : '';
+    ctx.save();
+    ctx.font = `bold 30px ${FONT}`;
+    const clockW = ctx.measureText('0:00.0').width; // fixed width so the box doesn't twitch
+    ctx.font = `bold 24px ${FONT}`;
+    const rescW = rescuedStr ? ctx.measureText(rescuedStr).width : 0;
+    ctx.restore();
+    const orbR = 11;
+    const figsW = 15; // one little figure, so you know what the count is
+    const bw = 16 + clockW + (rescuedStr ? 24 + figsW + 10 + rescW : 0) + 24 + orbR * 2 + 16;
+    const bh = rowH;
+    const bx = this.w - 12 - bw;
+    const by = 10;
+    hudBox(ctx, bx, by, bw, bh, C.hud);
+    let cx = bx + 16;
+    text(ctx, clockStr, cx, rowY + 1, 30, out ? 'rgba(159,232,255,0.4)' : C.hud, 'left');
+    cx += clockW + 24;
+    if (rescuedStr) {
+      this.drawHostageIcon(cx + 6, rowY + 12, 1.25);
+      cx += figsW + 10;
+      text(ctx, rescuedStr, cx, rowY + 1, 24, COLORS.survivor, 'left', 1);
+      cx += rescW + 24;
     }
-    const lx = this.w - 50;
-    const ly = 176;
+    const lx = cx + orbR;
+    const ly = rowY;
+
+    // ---- bottom left: a big vertical fuel gauge in its own translucent box
+    const gh = Math.round(Math.min(255, this.h * 0.34));
+    const gw = 30;
+    const fbw = gw + 36; // room for the F/E marks to its right
+    const fbh = gh + 20;
+    const fbx = 12;
+    const fby = this.h - 12 - fbh;
+    hudBox(ctx, fbx, fby, fbw, fbh, C.hud);
+    const gx = fbx + 10;
+    const gy = fby + 10;
+    this.gaugeRect = { x: gx, y: gy, w: gw, h: gh };
+    this.hudRects = [
+      { l: 12, r: 12 + lw, t: 10, b: 10 + rowH },
+      { l: bx, r: bx + bw, t: by, b: by + bh },
+      { l: fbx, r: fbx + fbw, t: fby, b: fby + fbh },
+    ];
+    this.drawFuelGauge(game, gx, gy, gw, gh);
+
     const lit = game.orb.delivered;
-    text(ctx, 'ORB', lx - 30, ly, 26, COLORS.orb, 'right', lit ? 1 : 0.5);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = lit ? COLORS.orb : 'rgba(255,61,242,0.4)';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(lx, ly, 15, 0, Math.PI * 2);
+    ctx.arc(lx, ly, orbR, 0, Math.PI * 2);
     ctx.stroke();
     if (lit) {
       const pulse = 0.8 + 0.2 * Math.sin(this.clock * 5);
-      const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, 34 * pulse);
+      const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, 26 * pulse);
       g.addColorStop(0, 'rgba(255,230,252,1)');
       g.addColorStop(0.3, 'rgba(255,61,242,0.75)');
       g.addColorStop(1, 'rgba(255,61,242,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(lx, ly, 34 * pulse, 0, Math.PI * 2);
+      ctx.arc(lx, ly, 26 * pulse, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
 
-    // ---- bottom centre: an analog fuel gauge
-    this.drawFuelGauge(game);
+    // ---- bottom right: minimap
+    this.drawMinimap(game);
+
+    // ---- first-level tutorial hint
+    this.drawTips(game);
 
     // ---- centre messages
     const m = game.message;
@@ -1592,6 +1870,23 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 }
 
 /** Neon corner brackets framing a HUD panel. */
+/** A compact, slightly translucent HUD box with a thin coloured edge. */
+function hudBox(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string): void {
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(6,5,20,0.58)';
+  roundRect(ctx, x, y, w, h, 8);
+  ctx.fill();
+  ctx.globalAlpha = 0.45;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.2;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 8;
+  roundRect(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 8);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string, alpha: number): void {
   const L = 16;
   const p = new Path2D();

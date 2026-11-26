@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULTS } from '../config';
 import { buildLevel } from '../level';
-import { LEVELS, LEVEL_FILES } from '../levels';
+import order from '../levels/order.json';
+import { ALL_LEVEL_FILES, LEVELS, LEVEL_FILES, SHELVED_LEVEL_FILES, levelFile } from '../levels';
 import { formatLevel, groundBelow, nearestSurface, newLevelTemplate, slugFile, snapToGround, tightSpots, validate } from './tools';
 
 const cfg = { ...DEFAULTS };
 
 describe('level list', () => {
   it('loads the levels in order.json order', () => {
-    expect(LEVEL_FILES).toEqual(['proving-ground.json', 'deep-caverns.json']);
-    expect(LEVELS.map((l) => l.name)).toEqual(['PROVING GROUND', 'DEEP CAVERNS']);
+    expect(LEVEL_FILES).toEqual((order as string[]).filter((f) => ALL_LEVEL_FILES.includes(f)));
+    expect(LEVELS.map((l) => l.name)).toEqual(LEVEL_FILES.map((f) => levelFile(f)!.name));
+  });
+
+  it('every level file is either played or on the shelf', () => {
+    expect([...LEVEL_FILES, ...SHELVED_LEVEL_FILES].sort()).toEqual(ALL_LEVEL_FILES);
+    for (const f of ALL_LEVEL_FILES) expect(levelFile(f)?.name, f).toBeTruthy();
   });
 });
 
@@ -46,9 +52,9 @@ describe('editor tools', () => {
   });
 
   it('formats JSON readably and round-trips', () => {
-    const s = formatLevel(LEVELS[1]);
+    const s = formatLevel(levelFile('deep-caverns.json')!);
     expect(s).toMatch(/\n {6}0, 2700,\n/);
-    expect(JSON.parse(s)).toEqual(JSON.parse(JSON.stringify(LEVELS[1])));
+    expect(JSON.parse(s)).toEqual(JSON.parse(JSON.stringify(levelFile('deep-caverns.json'))));
   });
 
   it('turns level names into file names', () => {

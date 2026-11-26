@@ -3,6 +3,7 @@ import { Game } from '../game';
 import type { LevelData, PadData } from '../level';
 import { distPointSegment, type Vec } from '../math';
 import type { Renderer } from '../render';
+import { LEVEL_FILES, SHELVED_LEVEL_FILES, levelFile } from '../levels';
 import {
   ORB_PEDESTAL_HEIGHT,
   PAD_EMBED,
@@ -135,7 +136,7 @@ export class Editor {
     this.active = true;
     this.showUi();
     this.changed();
-    this.flash(file ? `Editing ${file}` : 'Editing a new level');
+    this.flash(`Editing ${this.levelTitle()}`);
   }
 
   /** Re-open after a test flight, keeping everything as it was. */
@@ -899,22 +900,88 @@ export class Editor {
   private async saveToProject(): Promise<void> {
     const errors = this.problems.filter((p) => p.level === 'error');
     if (errors.length) return this.flash(`Can't save yet: ${errors[0].text}`);
-    const file = this.file ?? slugFile(this.draft.name);
+    const isNew = this.file === null;
     try {
-      const res = await fetch('/__editor/save', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ file, text: formatLevel(this.draft) }),
+      const out = await post<{ file: string }>('/__editor/save', {
+        file: this.file ?? slugFile(this.draft.name),
+        text: formatLevel(this.draft),
+        isNew,
       });
-      const out = (await res.json()) as { ok: boolean; error?: string };
-      if (!out.ok) throw new Error(out.error);
-      this.file = file;
+      this.file = out.file;
       this.saveSession();
-      this.flash(`Saved to src/levels/${file}`);
+      this.flash(isNew ? `Saved as a new level, added to the end of the game.` : `Saved.`);
       this.buildPanel();
     } catch (e) {
       this.flash(`Save failed: ${String(e)}. (Use Copy JSON instead.)`);
     }
+  }
+
+  /** True if the draft differs from what's saved in its file (always true for an unsaved new level). */
+  private get unsaved(): boolean {
+    const saved = this.file ? levelFile(this.file) : undefined;
+    return !saved || formatLevel(saved) !== formatLevel(this.draft);
+  }
+
+  /** Switch the editor to another level file (asks first if that would throw away changes). */
+  private openFile(file: string): void {
+    if (file === this.file) return;
+    const data = levelFile(file);
+    if (!data) return;
+    if (this.unsaved && !confirm(`Throw away your unsaved changes to ${this.levelTitle()}?`)) return;
+    localStorage.removeItem(SESSION_KEY); // don't resume an old draft of the other file
+    this.open(data, file);
+  }
+
+  /** Discard edits since the last save. */
+  private revert(): void {
+    const saved = this.file ? levelFile(this.file) : undefined;
+    if (!saved) return this.flash('This level has never been saved, so there is nothing to go back to.');
+    if (!this.unsaved) return this.flash('No unsaved changes.');
+    if (!confirm('Throw away all changes since the last save?')) return;
+    this.snapshot();
+    this.draft = clone(saved);
+    this.sel = null;
+    this.changed();
+    this.flash('Back to the saved version. (Undo brings your changes back.)');
+  }
+
+  /** Save the draft as a brand-new level file (the original stays as it was). */
+  private async saveAsCopy(): Promise<void> {
+    const errors = this.problems.filter((p) => p.level === 'error');
+    if (errors.length) return this.flash(`Can't save yet: ${errors[0].text}`);
+    const was = this.file;
+    this.file = null;
+    await this.saveToProject();
+    if (this.file === null) this.file = was; // save failed
+  }
+
+  /** Write a new play order; the page reloads with it and the editor reopens where it was. */
+  private async setOrder(order: string[], msg: string): Promise<void> {
+    try {
+      this.saveSession();
+      await post('/__editor/order', { order });
+      this.flash(msg);
+    } catch (e) {
+      this.flash(`Couldn't change the order: ${String(e)} (needs the dev server).`);
+    }
+  }
+
+  private moveLevel(file: string, to: number): void {
+    const order = LEVEL_FILES.filter((f) => f !== file);
+    order.splice(Math.max(0, Math.min(order.length, to)), 0, file);
+    void this.setOrder(order, `Moved to level ${order.indexOf(file) + 1}.`);
+  }
+
+  private shelveLevel(file: string): void {
+    if (LEVEL_FILES.length <= 1) return this.flash('The game needs at least one level.');
+    void this.setOrder(LEVEL_FILES.filter((f) => f !== file), 'Taken out of the game (kept on the shelf).');
+  }
+
+  /** "LEVEL 2 · DEEP CAVERNS", "SHELVED · ...", or "NEW LEVEL · ...". */
+  private levelTitle(): string {
+    const i = this.file ? LEVEL_FILES.indexOf(this.file) : -1;
+    const where = this.file === null ? 'NEW LEVEL (not saved)' : i >= 0 ? `LEVEL ${i + 1} of ${LEVEL_FILES.length}` : 'ON THE SHELF';
+    return `${where} · ${this.draft.name}`;
   }
 
   private newLevel(): void {
@@ -993,11 +1060,14 @@ export class Editor {
     };
 
     kids.push(
+      el('div', { class: 'ed-now' }, this.levelTitle(), this.unsaved ? el('span', { class: 'ed-dirty' }, ' ● unsaved') : ''),
       el(
         'div',
         { class: 'ed-actions' },
         button('▶ Test fly  [Enter]', () => this.test(), 'primary'),
         button('💾 Save to project  [Ctrl+S]', () => void this.saveToProject(), 'primary'),
+        button('⧉ Save as new copy', () => void this.saveAsCopy()),
+        button('⟲ Revert to saved', () => this.revert()),
         button('↶ Undo', () => this.undoStep(1)),
         button('↷ Redo', () => this.undoStep(-1)),
         button('📋 Copy JSON', () => {
@@ -1030,7 +1100,7 @@ export class Editor {
       ),
     );
 
-    section(`LEVEL · ${this.file ?? 'not saved yet'}`);
+    section('LEVEL SETTINGS');
     txt('Name', () => d.name, (v) => (d.name = v.toUpperCase()));
     num('Width', () => d.width, (v) => (d.width = Math.max(800, v)), 50);
     num('Target time (s)', () => d.targetTime, (v) => (d.targetTime = Math.max(0, v)), 5);
@@ -1092,6 +1162,7 @@ export class Editor {
 
     section(`CHECKS · ${this.problems.length ? this.problems.length + ' to look at' : 'all good'}`);
     for (const p of this.problems) kids.push(el('div', { class: `ed-problem ${p.level}` }, (p.level === 'error' ? '✖ ' : '⚠ ') + p.text));
+    this.buildLevelList(kids, button);
     kids.push(
       el(
         'div',
@@ -1101,6 +1172,52 @@ export class Editor {
     );
     this.panel.replaceChildren(...kids);
   }
+
+  /** The game's levels in play order (click to edit, ▲▼ to reorder, ⤓ to shelve) and the shelf. */
+  private buildLevelList(kids: HTMLElement[], button: (label: string, fn: () => void, cls?: string) => HTMLElement): void {
+    const section = (title: string) => kids.push(el('div', { class: 'ed-section' }, title));
+    const row = (file: string, num: string, ...tools: HTMLElement[]) => {
+      const name = button(`${num}  ${levelFile(file)?.name ?? file}`, () => this.openFile(file), 'ed-lvname');
+      name.title = `Edit ${file}`;
+      return el('div', { class: `ed-lvrow${file === this.file ? ' on' : ''}` }, name, ...tools);
+    };
+    const small = (label: string, title: string, fn: () => void) => {
+      const b = button(label, fn, 'ed-small');
+      b.title = title;
+      return b;
+    };
+    section(`LEVELS IN THE GAME · ${LEVEL_FILES.length}`);
+    LEVEL_FILES.forEach((f, i) =>
+      kids.push(
+        row(
+          f,
+          `${i + 1}.`,
+          small('▲', 'Play earlier', () => i > 0 && this.moveLevel(f, i - 1)),
+          small('▼', 'Play later', () => i < LEVEL_FILES.length - 1 && this.moveLevel(f, i + 1)),
+          small('⤓', 'Take out of the game (keeps it on the shelf)', () => this.shelveLevel(f)),
+        ),
+      ),
+    );
+    if (this.file === null) kids.push(el('div', { class: 'ed-lvrow on' }, el('div', { class: 'ed-lvnew' }, `+  ${this.draft.name} (save to add it)`)));
+    section(`SHELF · NOT PLAYED · ${SHELVED_LEVEL_FILES.length}`);
+    if (!SHELVED_LEVEL_FILES.length) kids.push(el('div', { class: 'ed-note' }, 'Levels you take out of the game wait here, untouched.'));
+    for (const f of SHELVED_LEVEL_FILES)
+      kids.push(
+        row(
+          f,
+          '–',
+          small('⤒ 1', 'Put in the game as level 1', () => void this.setOrder([f, ...LEVEL_FILES], 'Now level 1.')),
+          small('+ end', 'Put in the game as the last level', () => void this.setOrder([...LEVEL_FILES, f], `Now level ${LEVEL_FILES.length + 1}.`)),
+        ),
+      );
+  }
+}
+
+async function post<T = object>(url: string, body: object): Promise<T> {
+  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const out = (await res.json()) as { ok: boolean; error?: string } & T;
+  if (!out.ok) throw new Error(out.error);
+  return out;
 }
 
 // ---------------------------------------------------------------------- helpers
@@ -1182,6 +1299,13 @@ function injectStyles(): void {
   .ed-problem { margin: 3px 0; line-height: 1.35; }
   .ed-problem.error { color: #ff6a6a; }
   .ed-problem.warn { color: #ffcf66; }
+  .ed-now { font-size: 15px; font-weight: bold; color: #5afcff; margin: 0 0 8px; line-height: 1.3; }
+  .ed-dirty { color: #ffcf66; font-size: 12px; }
+  .ed-lvrow { display: flex; gap: 3px; margin: 3px 0; }
+  .ed-lvrow .ed-lvname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ed-lvrow.on .ed-lvname, .ed-lvrow.on .ed-lvnew { border-color: #5afcff; color: #5afcff; background: rgba(90,252,255,0.12); }
+  .ed-lvnew { flex: 1; padding: 5px 7px; border: 1px dashed rgba(90,252,255,0.5); border-radius: 3px; }
+  .ed-panel button.ed-small { padding: 5px 6px; }
   .ed-note { margin-top: 8px; color: rgba(207,233,255,0.6); line-height: 1.4; }
   `;
   document.head.append(s);

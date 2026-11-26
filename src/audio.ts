@@ -285,6 +285,14 @@ export class Sound {
       case 'rescued': // short happy run up
         [523.25, 659.25, 783.99, 880, 1046.5].forEach((f, i) => this.tone(t + i * 0.07, { type: 'triangle', f0: f, f1: f, dur: 0.5, gain: 0.13, attack: 0.005, lowpass: 2600 }));
         break;
+      case 'tallyRescue': { // one warm, ringing "rescued!" chord per hostage, a step higher each time
+        const up = Math.pow(2, (((e.value ?? 1) - 1) * 4) / 12);
+        [392, 493.88, 587.33, 783.99].forEach((f, i) =>
+          this.tone(t + i * 0.045, { type: 'triangle', f0: f * up, f1: f * up, dur: 0.6, gain: 0.11, attack: 0.004, lowpass: 3000 }),
+        );
+        this.tone(t, { type: 'sine', f0: 196 * up, f1: 196 * up, dur: 0.5, gain: 0.12, attack: 0.004 });
+        break;
+      }
       case 'tallyTime': { // rapid rising blips as the clock drains
         const f = 520 + (e.value ?? 0) * 900;
         this.tone(t, { type: 'square', f0: f, f1: f * 1.02, dur: 0.045, gain: 0.05, attack: 0.002, lowpass: 3200 });

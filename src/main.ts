@@ -9,7 +9,7 @@ import { createTuningPanel } from './tuning';
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 let levelIndex = 0;
 const makeGame = (i: number, carry?: { lives: number; score: number }) =>
-  new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length, lives: carry?.lives, score: carry?.score });
+  new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length, lives: carry?.lives, score: carry?.score, tutorial: i === 0 });
 let game = makeGame(levelIndex);
 const renderer = new Renderer(canvas);
 const input = new Input(window);
@@ -23,11 +23,15 @@ let testing = false;
 editor.onTest = (data) => {
   testing = true;
   paused = false;
-  game = new Game(data, { levelNumber: levelIndex + 1 });
+  // test-flying level 1 shows its tutorial hints too
+  game = new Game(data, { levelNumber: levelIndex + 1, tutorial: editor.file !== null && editor.file === LEVEL_FILES[0] });
   (window as unknown as { game: Game }).game = game;
 };
 editor.onExit = () => {
   editor.close();
+  // leaving the editor plays the level you were editing, if it's in the game
+  const i = LEVEL_FILES.indexOf(editor.file ?? '');
+  if (i >= 0) levelIndex = i;
   testing = false;
   game = makeGame(levelIndex);
   (window as unknown as { game: Game }).game = game;
@@ -84,7 +88,7 @@ function frame(now: number): void {
       ctx.font = 'bold 14px ui-monospace, Menlo, Consolas, monospace';
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(255,210,63,0.85)';
-      ctx.fillText('TEST FLIGHT  ·  E back to the editor  ·  R restart', w / 2, h - 108);
+      ctx.fillText('TEST FLIGHT  ·  E back to the editor  ·  R restart', w / 2, h - 30);
     });
   }
   sound.update(game, paused);

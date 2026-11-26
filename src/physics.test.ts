@@ -4,7 +4,11 @@ import { Game, STEP, TANK_H, type FrameInput } from './game';
 import provingGround from './levels/proving-ground.json';
 import type { LevelData } from './level';
 import { deg, dist, distPointSegment, segmentsIntersect } from './math';
-import { LEVELS } from './levels';
+import { LEVELS, levelFile } from './levels';
+
+// The shipped levels by file, so these tests don't depend on the play order (the owner reorders it).
+const PROVING_GROUND = levelFile('proving-ground.json')!;
+const DEEP_CAVERNS = levelFile('deep-caverns.json')!;
 import { buildLevel, segmentsNear, type Level } from './level';
 import { ANCHOR, createHeli, heliPoint, integrate, noseDir, rotorNormal, solveRod, thrustForce, type Body } from './physics';
 
@@ -396,7 +400,7 @@ describe('Deep Caverns is flyable', () => {
     }
     return { min, where };
   };
-  const level = buildLevel(LEVELS[1]);
+  const level = buildLevel(DEEP_CAVERNS);
   const [sealGate, exitGate] = level.gates;
   const HELI = 45; // heli needs this much room around its centre (rotor half-span is 38)
   const ORB_DROP = 16 + 110; // orb centre hangs this far below the heli
@@ -428,11 +432,11 @@ describe('Deep Caverns is flyable', () => {
     sealGate.open = false;
     exitGate.open = false;
     // eyes: every turret, plus each balloon's gun anywhere around its drift loop
-    const eyes: { name: string; eye: { x: number; y: number }; range: number }[] = LEVELS[1].turrets.map((t) => {
+    const eyes: { name: string; eye: { x: number; y: number }; range: number }[] = DEEP_CAVERNS.turrets.map((t) => {
       const a = deg(t.dir ?? -90);
       return { name: `turret at ${t.x},${t.y}`, eye: { x: t.x + Math.cos(a) * 8, y: t.y + Math.sin(a) * 8 }, range: cfg.turretRange };
     });
-    for (const b of LEVELS[1].balloons ?? []) {
+    for (const b of DEEP_CAVERNS.balloons ?? []) {
       const r = b.patrol ?? cfg.balloonPatrol;
       for (let k = 0; k < 8; k++) {
         const a = (k * Math.PI) / 4;
@@ -469,7 +473,7 @@ describe('Deep Caverns is flyable', () => {
   });
 
   it('every turret sits on a surface', () => {
-    for (const t of LEVELS[1].turrets) expect(clearance(level, t), `turret at ${t.x},${t.y}`).toBeLessThan(1.5);
+    for (const t of DEEP_CAVERNS.turrets) expect(clearance(level, t), `turret at ${t.x},${t.y}`).toBeLessThan(1.5);
   });
 });
 
@@ -643,7 +647,7 @@ describe('survivors', () => {
     expect(g.survivors.every((s) => s.state === 'aboard')).toBe(true);
   });
 
-  it('are counted as rescued when you land back on your pad, and lost if you crash with them', () => {
+  it('stay aboard when you land on your pad mid-level (they only unload in the tally), and are lost if you crash with them', () => {
     const g = new Game(noGuards);
     g.survivors[0].state = 'aboard';
     g.survivors[1].state = 'aboard';
@@ -651,7 +655,10 @@ describe('survivors', () => {
     g.heli.pos = { x: 280, y: 790 };
     g.heli.vel = { x: 0, y: 40 };
     for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
-    expect(g.survivors.every((s) => s.state === 'rescued')).toBe(true);
+    expect(g.heli.landed).toBe(true);
+    expect(g.phase).toBe('playing'); // orb not delivered yet
+    expect(g.survivors.every((s) => s.state === 'aboard')).toBe(true);
+    expect(g.score).toBe(0);
 
     const g2 = new Game(noGuards);
     g2.survivors[0].state = 'aboard';
@@ -857,7 +864,7 @@ describe('no soft-locks', () => {
   });
 
   it('after delivery you respawn with at least that checkpoint\'s fuel', () => {
-    const g = new Game(LEVELS[1]);
+    const g = new Game(DEEP_CAVERNS);
     g.orb.delivered = true;
     g.fuel = 0;
     g.heli.landed = false; g.onLaunchPad = false;
@@ -865,7 +872,7 @@ describe('no soft-locks', () => {
     g.heli.vel = { x: 0, y: 900 };
     for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
     expect(g.held).toBe(true);
-    expect(g.fuel).toBeGreaterThanOrEqual(LEVELS[1].checkpoints![0].fuel! - 0.01);
+    expect(g.fuel).toBeGreaterThanOrEqual(DEEP_CAVERNS.checkpoints![0].fuel! - 0.01);
   });
 });
 
@@ -905,7 +912,8 @@ describe('scoring', () => {
     const bonus = g.timeBonus;
     expect(bonus).toBeGreaterThan(0);
     const fuelAtLanding = g.fuel;
-    expect(g.score).toBe(2 * 500); // bonuses not paid yet: the tally pays them out
+    expect(g.score).toBe(0); // nothing paid yet: the tally pays out rescues, time and fuel
+    expect(g.tally!.rescuesTotal).toBe(2);
     for (let i = 0; i < 12 * 60 && g.tally!.stage !== 'done'; i++) g.update(idle, 1 / 60);
     expect(g.tally!.stage).toBe('done');
     expect(g.bonusTime).toBe(0);
@@ -915,6 +923,33 @@ describe('scoring', () => {
     expect(g.fuelBonus).toBe(fuelBonus);
     expect(fuelBonus).toBeGreaterThan(0);
     expect(g.score).toBe(2 * 500 + bonus + fuelBonus);
+  });
+});
+
+describe('rescue bonus in the tally', () => {
+  it('pays each rescued hostage one at a time, slowly, before the time bonus', () => {
+    const g = new Game(noGuards);
+    g.balloons = [];
+    g.turrets.forEach((t) => (t.alive = false));
+    g.survivors.forEach((s) => (s.state = 'aboard'));
+    g.orb.delivered = true;
+    g.heli.landed = false; g.onLaunchPad = false;
+    g.heli.pos = { x: 280, y: 790 };
+    g.heli.vel = { x: 0, y: 40 };
+    for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
+    expect(g.phase).toBe('complete');
+    const paidAt: number[] = [];
+    let stageAfter = '';
+    for (let i = 0; i < 6 * 60; i++) {
+      g.update(idle, 1 / 60);
+      for (const e of g.events) if (e.type === 'tallyRescue') paidAt.push(i / 60);
+      g.events.length = 0;
+      if (paidAt.length === 2 && !stageAfter && g.tally!.stage !== 'rescue') stageAfter = g.tally!.stage;
+    }
+    expect(paidAt.length).toBe(2);
+    expect(paidAt[1] - paidAt[0]).toBeGreaterThan(0.5); // a beat each, not a blur
+    expect(stageAfter).toBe('time');
+    expect(g.survivors.every((s) => s.state === 'rescued')).toBe(true); // unloaded one by one by the tally
   });
 });
 
@@ -965,7 +1000,7 @@ describe('safe before launch', () => {
 
 describe('after mission complete', () => {
   it('nothing can shoot you down while you sit on the pad', () => {
-    const g = new Game(LEVELS[0]);
+    const g = new Game(PROVING_GROUND);
     g.orb.delivered = true;
     g.heli.landed = false;
     g.onLaunchPad = false;
@@ -980,7 +1015,7 @@ describe('after mission complete', () => {
 
 describe('level progression', () => {
   it('after the results pause, the game asks for the next level', () => {
-    const g = new Game(LEVELS[0], { levelNumber: 1, hasNextLevel: true });
+    const g = new Game(PROVING_GROUND, { levelNumber: 1, hasNextLevel: true });
     g.orb.delivered = true;
     g.heli.landed = false;
     g.onLaunchPad = false;
@@ -996,7 +1031,7 @@ describe('level progression', () => {
   });
 
   it('on the last level it stays on the results', () => {
-    const g = new Game(LEVELS[1], { levelNumber: 2, hasNextLevel: false });
+    const g = new Game(DEEP_CAVERNS, { levelNumber: 2, hasNextLevel: false });
     g.orb.delivered = true;
     g.completedAt = null;
     (g as unknown as { complete(): void }).complete();
@@ -1008,7 +1043,7 @@ describe('level progression', () => {
 describe('smarter guards', () => {
   // Deep Caverns orb-chamber guard (pad x 1150..1260 at y 1440) hunting a heli that moves around the cave.
   const caveGame = () => {
-    const g = new Game(LEVELS[1]);
+    const g = new Game(DEEP_CAVERNS);
     g.turrets.forEach((t) => (t.alive = false));
     g.balloons = [];
     g.update(idle, 1 / 60); // guards appear on their pads while you're still far away on the launch pad
@@ -1057,7 +1092,7 @@ describe('smarter guards', () => {
 });
 
 describe('turret mounting', () => {
-  const base = LEVELS[0];
+  const base = PROVING_GROUND;
   const withTurret = (x: number, y: number, dir?: number) => new Game({ ...base, turrets: [{ x, y, dir }] });
 
   it('aligns to a slope', () => {

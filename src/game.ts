@@ -1,3 +1,4 @@
+import { Tutorial } from './tutorial';
 import { config } from './config';
 import { buildLevel, resetGates, segmentsNear, type Level, type LevelData, type PadData, type Segment } from './level';
 import { add, closestPointSegment, deg, dist, distPointSegment, dot, len, scale, segmentIntersectionT, segmentsIntersect, sub, type Vec } from './math';
@@ -63,7 +64,7 @@ export interface Turret {
 
 /** Things that happened this frame, for sound (and anything else that wants to react). */
 export type GameEvent =
-  | { type: 'tallyTime' | 'tallyFuel' | 'tallyDone' | 'gate' | 'board' | 'rescued' | 'tankEmpty' | 'enemyLaunch' | 'balloonPop' | 'extraLife' | 'missile' | 'shieldHit' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'liftoff' | 'land'; pos?: Vec; value?: number };
+  | { type: 'tallyRescue' | 'tallyTime' | 'tallyFuel' | 'tallyDone' | 'gate' | 'board' | 'rescued' | 'tankEmpty' | 'enemyLaunch' | 'balloonPop' | 'extraLife' | 'missile' | 'shieldHit' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'liftoff' | 'land'; pos?: Vec; value?: number };
 
 export interface Survivor {
   pos: Vec; // feet
@@ -235,7 +236,19 @@ export class Game {
   /** Set when the results have been shown long enough; main.ts then loads the next level. */
   readyForNext = false;
   /** End-of-level bonus tally in progress (null until the level is complete). */
-  tally: { stage: 'intro' | 'time' | 'pause' | 'fuel' | 'done'; t: number; tenths: number; tenthsTotal: number; ticks: number; ticksTotal: number; acc: number; sound: number } | null = null;
+  tally: {
+    stage: 'intro' | 'rescue' | 'time' | 'pause' | 'fuel' | 'done';
+    t: number;
+    /** Rescued hostages still to pay out, and how many there were. */
+    rescues: number;
+    rescuesTotal: number;
+    tenths: number;
+    tenthsTotal: number;
+    ticks: number;
+    ticksTotal: number;
+    acc: number;
+    sound: number;
+  } | null = null;
   /** Bonus time remaining (seconds). Starts at the level's target time, counts down from first lift-off, stops at zero. */
   bonusTime = 0;
   launched = false;
@@ -273,8 +286,12 @@ export class Game {
   private readonly startLives: number;
   private readonly startScore: number;
 
-  constructor(data: LevelData, opts: { levelNumber?: number; hasNextLevel?: boolean; lives?: number; score?: number } = {}) {
+  /** First-level hints (null on other levels). Survives deaths and restarts, so each hint shows once per visit. */
+  readonly tutorial: Tutorial | null;
+
+  constructor(data: LevelData, opts: { levelNumber?: number; hasNextLevel?: boolean; lives?: number; score?: number; tutorial?: boolean } = {}) {
     this.levelNumber = opts.levelNumber ?? 1;
+    this.tutorial = opts.tutorial ? new Tutorial() : null;
     this.hasNextLevel = opts.hasNextLevel ?? false;
     this.startLives = opts.lives ?? START_LIVES;
     this.startScore = opts.score ?? 0;
@@ -414,6 +431,7 @@ export class Game {
 
     this.stepTally(dt);
     this.frameEffects(input, dt);
+    this.tutorial?.update(this, dt);
   }
 
   private substep(input: FrameInput, dt: number): void {
@@ -751,12 +769,14 @@ export class Game {
     this.phase = 'complete';
     this.completedAt = this.time;
     const h = this.heli;
-    // bonuses are paid out by the end-of-level tally (time first, then fuel), see stepTally()
+    // bonuses are paid out by the end-of-level tally (rescues, then time, then fuel), see stepTally()
+    // hostages ride with you until now: they unload one by one in the tally (see stepTally)
+    const rescues = this.survivors.filter((s) => s.state === 'aboard').length;
     const tenthsUnder = Math.floor(this.bonusTime * 10 + 1e-6);
     this.timeBonus = tenthsUnder * POINTS.perTenthUnderTarget;
     const ticks = Math.floor((Math.max(0, this.fuel) / this.cfg.fuelMax) * FUEL_TICKS + 1e-6);
     this.fuelBonus = ticks * POINTS.perFuelTick;
-    this.tally = { stage: 'intro', t: 0, tenths: tenthsUnder, tenthsTotal: tenthsUnder, ticks, ticksTotal: ticks, acc: 0, sound: 0 };
+    this.tally = { stage: 'intro', t: 0, rescues, rescuesTotal: rescues, tenths: tenthsUnder, tenthsTotal: tenthsUnder, ticks, ticksTotal: ticks, acc: 0, sound: 0 };
     this.bonusTime = tenthsUnder / 10;
     this.fuel = (ticks / FUEL_TICKS) * this.cfg.fuelMax;
     this.ring(h.pos, 160, '#3dff8a', 1.2);
@@ -766,7 +786,7 @@ export class Game {
     this.flash('MISSION COMPLETE', undefined, '#3dff8a', 1e9);
   }
 
-  /** End-of-level tally: drain the time bonus, then the fuel gauge tick by tick, into the score. */
+  /** End-of-level tally: pay out each rescued hostage (slowly, one by one), then drain the time bonus, then the fuel gauge tick by tick, into the score. */
   private stepTally(dt: number): void {
     const t = this.tally;
     if (!t) return;
@@ -778,7 +798,24 @@ export class Game {
     }
     t.t += dt;
     if (t.stage === 'intro') {
-      if (t.t > 1.2) Object.assign(t, { stage: t.tenths > 0 ? 'time' : 'fuel', t: 0 });
+      if (t.t > 1.2) Object.assign(t, { stage: t.rescues > 0 ? 'rescue' : t.tenths > 0 ? 'time' : 'fuel', t: 0 });
+      return;
+    }
+    if (t.stage === 'rescue') {
+      // few of these, so each one gets its own beat
+      if (t.rescues > 0 && t.t >= 0.7) {
+        t.t = 0;
+        t.rescues--;
+        // the next hostage climbs out and scurries off the pad
+        const s = this.survivors.find((v) => v.state === 'aboard');
+        if (s) s.state = 'rescued';
+        const pad = this.level.startPad;
+        const k = t.rescuesTotal - t.rescues - 1;
+        this.disembarking.push({ pos: { x: this.heli.pos.x - 10 + k * 6, y: pad.y }, t: 0 });
+        this.award(POINTS.rescue, this.heli.pos);
+        this.events.push({ type: 'tallyRescue', value: t.rescuesTotal - t.rescues });
+      }
+      if (t.rescues <= 0 && t.t > 0.8) Object.assign(t, { stage: t.tenths > 0 ? 'time' : 'fuel', t: 0 });
       return;
     }
     if (t.stage === 'time') {
@@ -845,17 +882,8 @@ export class Game {
     h.tiltTarget = 0;
     h.pos.y = pad.y - SKID_Y - 0.05;
     this.events.push({ type: 'land', pos: h.pos });
-    if (pad.kind === 'start') {
-      const aboard = this.survivors.filter((s) => s.state === 'aboard');
-      aboard.forEach((s, i) => {
-        s.state = 'rescued';
-        this.award(POINTS.rescue, { x: h.pos.x - 30 + i * 30, y: h.pos.y - 20 * i });
-        this.disembarking.push({ pos: { x: h.pos.x - 10 + i * 6, y: pad.y }, t: -i * 0.25 });
-      });
-      if (aboard.length) {
-        this.events.push({ type: 'rescued', pos: h.pos });
-      }
-    }
+    // hostages stay aboard when you land on your pad: they only unload (and score) in the
+    // end-of-level tally, after mission complete
     if (pad.kind === 'start' && this.orb.delivered && this.phase === 'playing') this.complete();
   }
 
@@ -1503,7 +1531,7 @@ export class Game {
   }
 
   /** A live tank roughly below the heli, within reach and in sight. */
-  private tankInReach(): FuelTank | null {
+  tankInReach(): FuelTank | null {
     const h = this.heli;
     let best: FuelTank | null = null;
     for (const t of this.fuelTanks) {
