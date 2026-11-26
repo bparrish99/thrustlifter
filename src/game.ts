@@ -236,7 +236,7 @@ export class Game {
   onLaunchPad = true;
   /** Enemies may target you: not sitting on the launch pad before take-off, not held at a checkpoint. */
   get exposed(): boolean {
-    return !this.onLaunchPad && !this.held;
+    return !this.onLaunchPad && !this.held && this.phase === 'playing';
   }
   fuel = 0;
   /** Shield up this frame (hold Space while not carrying the orb, with fuel). */
@@ -437,7 +437,7 @@ export class Game {
       const tank = this.spaceMode === 'fuel' && !orb.attached ? this.tankInReach() : null;
       this.shield = this.spaceMode === 'shield' && this.fuel > 0 && !orb.attached;
       // landed with an empty tank and nothing to suck from: stranded after a moment
-      this.strandedTime = h.landed && this.fuel <= 0.01 && !this.fueling ? this.strandedTime + dt : 0;
+      this.strandedTime = this.phase === 'playing' && h.landed && this.fuel <= 0.01 && !this.fueling ? this.strandedTime + dt : 0;
       if (!this.held && this.phase === 'playing') {
         this.fuel -= (h.throttle + ctl.dive) * cfg.fuelBurn * dt + (this.shield ? cfg.shieldBurn * dt : 0);
         this.fuel = Math.max(0, this.fuel);
@@ -479,7 +479,7 @@ export class Game {
       }
 
       this.collide();
-      if (this.alive && this.strandedTime > 2.5) this.strand();
+      if (this.phase === 'playing' && this.strandedTime > 2.5) this.strand();
       if (this.alive) this.pickupAndDeliver(input);
       if (this.alive) this.weapons(input, dt);
     }
@@ -849,6 +849,7 @@ export class Game {
   }
 
   private crash(reason: string): void {
+    if (this.phase !== 'playing') return; // the mission's over: nothing can hurt you now
     const h = this.heli;
     this.phase = 'dead';
     this.phaseTime = 0;

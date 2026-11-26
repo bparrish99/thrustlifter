@@ -962,3 +962,18 @@ describe('safe before launch', () => {
     expect(g.onLaunchPad).toBe(false);
   });
 });
+
+describe('after mission complete', () => {
+  it('nothing can shoot you down while you sit on the pad', () => {
+    const g = new Game(LEVELS[0]);
+    g.orb.delivered = true;
+    g.heli.landed = false;
+    g.onLaunchPad = false;
+    g.heli.pos = { x: 280, y: 830 };
+    g.heli.vel = { x: 0, y: 20 };
+    for (let i = 0; i < 25 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.phase).toBe('complete');
+    expect(g.deaths).toBe(0);
+    expect(g.projectiles.filter((p) => p.kind === 'enemy').length).toBe(0);
+  });
+});
