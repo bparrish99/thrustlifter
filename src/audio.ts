@@ -35,6 +35,9 @@ export class Sound {
   private beamOsc!: OscillatorNode;
   private beamOsc2!: OscillatorNode;
   private beamAir!: BiquadFilterNode;
+  private shieldGain!: GainNode;
+  private nextBlip = 0;
+  private nextLowFuel = 0;
   private beamTime = 0; // seconds the beam has been on (drives the rising pitch)
   private lastT = 0;
   private sfx!: GainNode; // effects volume (end of chain)
@@ -125,6 +128,33 @@ export class Sound {
     airLevel.gain.value = 0.35;
     air.connect(this.beamAir).connect(airLevel).connect(this.beamGain);
     air.start();
+
+    // shield: a soft electric hum (two tones a fifth apart) with a fast shimmer
+    const s1 = ctx.createOscillator();
+    s1.type = 'sine';
+    s1.frequency.value = 196;
+    const s2 = ctx.createOscillator();
+    s2.type = 'triangle';
+    s2.frequency.value = 294;
+    s2.detune.value = 6;
+    const s2lvl = ctx.createGain();
+    s2lvl.gain.value = 0.35;
+    const shimmer = ctx.createOscillator();
+    shimmer.frequency.value = 16;
+    const shimmerDepth = ctx.createGain();
+    shimmerDepth.gain.value = 0.25;
+    const shieldMix = ctx.createGain();
+    shieldMix.gain.value = 0.75;
+    shimmer.connect(shimmerDepth).connect(shieldMix.gain);
+    s1.connect(shieldMix);
+    s2.connect(s2lvl).connect(shieldMix);
+    const shieldTone = ctx.createBiquadFilter();
+    shieldTone.type = 'lowpass';
+    shieldTone.frequency.value = 1400;
+    this.shieldGain = ctx.createGain();
+    this.shieldGain.gain.value = 0;
+    shieldMix.connect(shieldTone).connect(this.shieldGain).connect(this.sfxIn);
+    for (const o of [s1, s2, shimmer]) o.start();
     for (const o of [this.beamOsc, this.beamOsc2, pulse]) o.start();
 
     this.master = ctx.createGain();
@@ -219,6 +249,23 @@ export class Sound {
         this.tone(t, { type: 'sine', f0: 150, f1: 55, dur: 0.25, gain: 0.55 * v });
         this.noiseHit(t, { dur: 1.0, type: 'bandpass', f0: 700, f1: 1300, q: 0.9, gain: 0.55 * v, attack: 0.04 });
         this.noiseHit(t, { dur: 1.1, type: 'lowpass', f0: 700, f1: 250, gain: 0.7 * v, attack: 0.03, brown: true });
+        break;
+      case 'tankEmpty': // drained: a hollow little clunk
+        this.tone(t, { type: 'triangle', f0: 300, f1: 160, dur: 0.2, gain: 0.25 * v });
+        this.ring(t, 900, 0.3, 0.12 * v);
+        break;
+      case 'board': // cheerful little hop aboard, plus fuel-top-up blips
+        this.tone(t, { type: 'triangle', f0: 660, f1: 660, dur: 0.12, gain: 0.16, attack: 0.005, lowpass: 2500 });
+        this.tone(t + 0.08, { type: 'triangle', f0: 880, f1: 880, dur: 0.18, gain: 0.16, attack: 0.005, lowpass: 2500 });
+        [520, 700, 940].forEach((f, i) => this.tone(t + 0.2 + i * 0.06, { type: 'sine', f0: f, f1: f, dur: 0.1, gain: 0.1, attack: 0.005 }));
+        break;
+      case 'rescued': // short happy run up
+        [523.25, 659.25, 783.99, 880, 1046.5].forEach((f, i) => this.tone(t + i * 0.07, { type: 'triangle', f0: f, f1: f, dur: 0.5, gain: 0.13, attack: 0.005, lowpass: 2600 }));
+        break;
+      case 'shieldHit': // electric zap as the shield eats a shot
+        this.noiseHit(t, { dur: 0.3, type: 'bandpass', f0: 2400, f1: 700, q: 2, gain: 0.5 * v });
+        this.tone(t, { type: 'sawtooth', f0: 900, f1: 260, dur: 0.25, gain: 0.08 * v, lowpass: 2200 });
+        this.tone(t, { type: 'sine', f0: 180, f1: 90, dur: 0.3, gain: 0.3 * v });
         break;
       case 'enemyShot': // deep "thoom" rather than a pew
         this.tone(t, { type: 'sine', f0: 230, f1: 85, dur: 0.45, gain: 0.45 * v });
@@ -373,6 +420,21 @@ export class Sound {
     this.beamOsc.frequency.setTargetAtTime(bf, t, 0.03);
     this.beamOsc2.frequency.setTargetAtTime(bf * 2, t, 0.03);
     this.beamAir.frequency.setTargetAtTime(bf * 3, t, 0.03);
+
+    // shield hum
+    this.shieldGain.gain.setTargetAtTime(game.shield && !paused ? 0.2 : 0, t, 0.04);
+    // refuel: soft blips rising in pitch as the tank fills
+    if (game.refueling && !paused && game.alive && t >= this.nextBlip) {
+      const k = game.fuel / config.fuelMax;
+      this.tone(t, { type: 'sine', f0: 440 + k * 440, f1: 440 + k * 440, dur: 0.09, gain: 0.12, attack: 0.005 });
+      this.nextBlip = t + 0.14;
+    }
+    // low fuel warning beep while flying
+    if (game.alive && !paused && !game.heli.landed && game.fuel < config.fuelMax * 0.2 && t >= this.nextLowFuel) {
+      this.tone(t, { type: 'triangle', f0: 660, f1: 640, dur: 0.16, gain: 0.14, attack: 0.005, lowpass: 2000 });
+      this.tone(t + 0.18, { type: 'triangle', f0: 520, f1: 500, dur: 0.16, gain: 0.12, attack: 0.005, lowpass: 2000 });
+      this.nextLowFuel = t + (game.fuel <= 0 ? 0.8 : 1.4);
+    }
     // blade-pass rate: a brisk soft idle chop on the pad; once airborne the beat never
     // drops back to idle tempo (you can hear that you're flying), building to full at max throttle
     const minRate = game.heli.landed ? 8 : 11.5;

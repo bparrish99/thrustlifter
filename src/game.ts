@@ -63,7 +63,21 @@ export interface Turret {
 
 /** Things that happened this frame, for sound (and anything else that wants to react). */
 export type GameEvent =
-  | { type: 'gate' | 'missile' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'liftoff' | 'land'; pos?: Vec };
+  | { type: 'gate' | 'board' | 'rescued' | 'tankEmpty' | 'missile' | 'shieldHit' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'liftoff' | 'land'; pos?: Vec };
+
+export interface Survivor {
+  pos: Vec; // feet
+  state: 'waiting' | 'running' | 'aboard' | 'rescued' | 'lost';
+  dir: number; // facing/run direction for the animation
+  t: number; // animation clock offset
+}
+
+export interface FuelTank {
+  pos: Vec; // base, on the ground
+  amount: number;
+  max: number;
+  alive: boolean;
+}
 
 export interface Particle {
   pos: Vec;
@@ -107,6 +121,11 @@ export interface Message {
 export type Phase = 'playing' | 'dead' | 'complete';
 
 export const STEP = 1 / 240;
+export const SHIELD_RADIUS = 56;
+export const TANK_W = 30;
+export const TANK_H = 22;
+export const SURVIVOR_CALL_RANGE = 280; // land within this distance and they come running
+export const SURVIVOR_SPEED = 70;
 export const TURRET_RADIUS = 22; // dome size; also the collision size
 const RESPAWN_DELAY = 2.2;
 const CEILING = -1500;
@@ -117,6 +136,8 @@ export const COLORS = {
   missile: '#7dffb0',
   target: '#ff4a4a',
   enemyShot: '#ff6a3d',
+  survivor: '#9dff9d',
+  fuel: '#ffe14d',
   spark: ['#ffffff', '#ffd23f', '#ff8a3d', '#ff3df2'],
   dust: '#7fd6ff',
 };
@@ -127,6 +148,12 @@ export class Game {
   heli!: HeliState;
   orb!: Orb;
   turrets: Turret[] = [];
+  survivors: Survivor[] = [];
+  fuelTanks: FuelTank[] = [];
+  /** Tank being sucked from this frame (for the beam visual), or null. */
+  fueling: FuelTank | null = null;
+  /** Little figures running off the pad after being dropped home (visual only). */
+  disembarking: { pos: Vec; t: number }[] = [];
   projectiles: Projectile[] = [];
   particles: Particle[] = [];
   rings: Ring[] = [];
@@ -150,7 +177,15 @@ export class Game {
   lastCrash = '';
   lastOrbLoss = '';
   completedAt: number | null = null;
-  private tetherArmed = true; // must let go of Space after a release before tethering again
+  /** Respawned at a checkpoint and waiting for the first input (no gravity, turrets hold fire). */
+  held = false;
+  fuel = 0;
+  /** Shield up this frame (hold Space while not carrying the orb, with fuel). */
+  shield = false;
+  shieldFlash = 0; // visual pulse when the shield absorbs a hit
+  /** What the current Space press is doing. Decided when Space goes down, kept until it's released. */
+  spaceMode: 'tether' | 'fuel' | 'shield' | 'release' | null = null;
+  refueling = false;
   private orbLostTimer = 0;
   private settleTime = 0;
 
@@ -188,6 +223,13 @@ export class Game {
       delivered: false,
       deliveredAt: 0,
     };
+    this.survivors = (d.survivors ?? []).map((s, i) => ({ pos: { x: s.x, y: s.y }, state: 'waiting' as const, dir: -1, t: i * 0.37 }));
+    this.disembarking = [];
+    this.fuelTanks = (d.fuelTanks ?? []).map((t) => {
+      const amount = t.amount ?? this.cfg.tankAmount;
+      return { pos: { x: t.x, y: t.y }, amount, max: amount, alive: true };
+    });
+    this.fuel = this.cfg.fuelMax;
     this.projectiles = [];
     this.particles = [];
     this.rings = [];
@@ -197,7 +239,7 @@ export class Game {
     this.time = 0;
     this.orbLostTimer = 0;
     this.settleTime = 0;
-    this.tetherArmed = true;
+    this.spaceMode = null;
     this.completedAt = null;
     resetGates(this.level);
     this.phase = 'playing';
@@ -206,12 +248,28 @@ export class Game {
     this.flash('LIFT THE ORB', 'get it into the bowl', COLORS.orb, 3);
   }
 
-  private spawnHeli(): void {
+  /** Start on the launch pad, or (with `at`) hovering at a checkpoint, held until you touch the controls. */
+  private spawnHeli(at?: Vec): void {
     const pad = this.level.startPad;
-    this.heli = createHeli({ x: pad.x + pad.w / 2, y: pad.y - SKID_Y - 0.05 }, this.cfg);
-    this.heli.landed = true;
+    if (at) {
+      this.heli = createHeli(at, this.cfg);
+      this.held = true;
+    } else {
+      this.heli = createHeli({ x: pad.x + pad.w / 2, y: pad.y - SKID_Y - 0.05 }, this.cfg);
+      this.heli.landed = true;
+      this.held = false;
+    }
     this.facingVis = 1;
     this.acc = 0;
+  }
+
+  /** Where to respawn given progress so far (null = launch pad). Internal only: no "checkpoint" UI. */
+  private checkpoint(): Vec | null {
+    if (!this.orb.delivered) return null;
+    const cp = this.level.data.checkpoints?.find((c) => c.after === 'delivery');
+    if (cp) return { x: cp.x, y: cp.y };
+    const b = this.level.bowl;
+    return { x: b.cx, y: b.rimY - 220 };
   }
 
   flash(text: string, sub: string | undefined, color: string, life = 2): void {
@@ -226,7 +284,10 @@ export class Game {
       return;
     }
     if (input.flip && this.alive) this.heli.facing = this.heli.facing === 1 ? -1 : 1;
-    if (input.pickupPressed && this.alive && this.orb.attached) this.release();
+    if (input.pickupPressed && this.alive && this.orb.attached) {
+      this.release();
+      this.spaceMode = 'release'; // this press is spent on the release; no re-grab, no shield
+    }
 
     this.acc += dt;
     let n = 0;
@@ -252,16 +313,47 @@ export class Game {
     if (this.phase === 'dead') {
       if (this.phaseTime >= RESPAWN_DELAY) this.respawn();
     } else {
-      updateControls(h, input, cfg, dt);
+      // respawned at a checkpoint: hang in place until the player touches anything
+      if (this.held && (input.tiltAxis !== 0 || input.rotor > 0 || input.dive > 0 || input.fire || input.flip || input.pickup)) this.held = false;
+      // out of fuel: no thrust, no dive, no shield
+      const ctl = this.fuel > 0 ? input : { ...input, rotor: 0, dive: 0 };
+      updateControls(h, ctl, cfg, dt);
+      // hover over a fuel tank holding Space (not while carrying) to suck it up
+      this.fueling = null;
+      this.refueling = false;
+      // Space does ONE thing per press, decided when it goes down: tether (orb in reach) beats
+      // fuel (tank in reach) beats shield. It never switches until Space is released.
+      if (!input.pickup) this.spaceMode = null;
+      else if (this.spaceMode === null) this.spaceMode = orb.attached ? 'release' : this.orbInReach() ? 'tether' : this.tankInReach() ? 'fuel' : 'shield';
+      const tank = this.spaceMode === 'fuel' && !orb.attached ? this.tankInReach() : null;
+      this.shield = this.spaceMode === 'shield' && this.fuel > 0 && !orb.attached;
+      if (!this.held) {
+        this.fuel -= (h.throttle + ctl.dive) * cfg.fuelBurn * dt + (this.shield ? cfg.shieldBurn * dt : 0);
+        this.fuel = Math.max(0, this.fuel);
+      }
+      {
+        if (tank && this.fuel < cfg.fuelMax) {
+          const take = Math.min(cfg.tankRate * dt, tank.amount, cfg.fuelMax - this.fuel);
+          tank.amount -= take;
+          this.fuel += take;
+          this.fueling = tank;
+          this.refueling = true;
+          if (tank.amount <= 0.01) {
+            tank.alive = false;
+            this.explode(tankCentre(tank), 12, 120, COLORS.fuel);
+            this.events.push({ type: 'tankEmpty', pos: tankCentre(tank) });
+          }
+        }
+      }
 
       if (h.landed && h.throttle * cfg.maxThrust > h.mass * cfg.gravity) {
         h.landed = false;
         this.events.push({ type: 'liftoff', pos: h.pos });
       }
 
-      if (!h.landed) {
+      if (!h.landed && !this.held) {
         const f = thrustForce(h, cfg);
-        f.y += Math.max(0, Math.min(1, input.dive)) * cfg.diveAccel * h.mass; // straight down, world space
+        f.y += Math.max(0, Math.min(1, ctl.dive)) * cfg.diveAccel * h.mass; // straight down, world space
         integrate(h, f, cfg.gravity, cfg.heliDrag, dt);
         if (h.pos.y < CEILING) {
           h.pos.y = CEILING;
@@ -275,7 +367,6 @@ export class Game {
 
       this.collide();
       if (this.alive) this.pickupAndDeliver(input);
-      if (!input.pickup) this.tetherArmed = true;
       if (this.alive) this.weapons(input, dt);
     }
 
@@ -285,6 +376,7 @@ export class Game {
       if (this.orbLostTimer <= 0) this.resetOrb();
     }
     this.stepTurrets(dt);
+    this.stepSurvivors(dt);
     this.stepProjectiles(dt);
   }
 
@@ -305,7 +397,9 @@ export class Game {
       this.resetOrb();
       resetGates(this.level);
     }
-    this.spawnHeli();
+    this.spawnHeli(this.checkpoint() ?? undefined);
+    // no refuel on death: keep what you had, with a small safety net so you're never stranded
+    this.fuel = Math.max(this.fuel, Math.min(this.cfg.fuelRespawnMin, this.cfg.fuelMax));
   }
 
   // ------------------------------------------------------------- collision
@@ -349,6 +443,11 @@ export class Game {
         const c = turretCentre(t);
         if (hull.some((hs) => distPointSegment(c, hs.a, hs.b) < TURRET_RADIUS)) return this.crash('HIT A TURRET');
       }
+      for (const t of this.fuelTanks) {
+        if (!t.alive || dist(t.pos, h.pos) > HULL_RADIUS + TANK_W) continue;
+        const c = tankCentre(t);
+        if (hull.some((hs) => distPointSegment(c, hs.a, hs.b) < TANK_W / 2)) return this.crash('HIT A FUEL TANK');
+      }
 
       if (!orb.attached && !orb.delivered && dist(orb.pos, h.pos) < HULL_RADIUS + cfg.orbRadius) {
         if (hull.some((hs) => distPointSegment(orb.pos, hs.a, hs.b) < cfg.orbRadius)) return this.crash('HIT THE ORB');
@@ -371,6 +470,7 @@ export class Game {
       for (const t of this.turrets) {
         if (t.alive && dist(p, turretCentre(t)) < r + TURRET_RADIUS) return this.loseOrb('it hit a turret');
       }
+      for (const t of this.fuelTanks) if (t.alive && dist(p, tankCentre(t)) < r + TANK_W / 2) return this.loseOrb('it hit a fuel tank');
     }
   }
 
@@ -395,7 +495,6 @@ export class Game {
     if (!orb.attached) return;
     orb.attached = false;
     orb.free = true;
-    this.tetherArmed = false;
     this.settleTime = 0;
     this.ring(heliPoint(this.heli, ANCHOR), 24, COLORS.orb, 0.3);
     this.events.push({ type: 'release', pos: orb.pos });
@@ -420,6 +519,7 @@ export class Game {
     for (const t of this.turrets) {
       if (t.alive && dist(orb.pos, turretCentre(t)) < r + TURRET_RADIUS) return this.loseOrb('it hit a turret');
     }
+    for (const t of this.fuelTanks) if (t.alive && dist(orb.pos, tankCentre(t)) < r + TANK_W / 2) return this.loseOrb('it hit a fuel tank');
     for (const { n, pen } of contacts) {
       orb.pos.x += n.x * pen;
       orb.pos.y += n.y * pen;
@@ -498,7 +598,10 @@ export class Game {
     const d = this.deaths === 1 ? '1 death' : `${this.deaths} deaths`;
     this.events.push({ type: 'complete', pos: h.pos });
     const next = this.hasNextLevel ? 'N next level  ·  R retry' : 'all levels done  ·  R retry';
-    this.flash('MISSION COMPLETE', `${this.time.toFixed(1)}s  ·  ${d}  ·  ${next}`, '#3dff8a', 1e9);
+    const n = this.survivors.length;
+    const saved = this.survivors.filter((s) => s.state === 'rescued').length;
+    const rescue = n ? `  ·  rescued ${saved}/${n}` : '';
+    this.flash('MISSION COMPLETE', `${this.time.toFixed(1)}s  ·  ${d}${rescue}  ·  ${next}`, '#3dff8a', 1e9);
   }
 
   private land(pad: PadData): void {
@@ -509,6 +612,17 @@ export class Game {
     h.tiltTarget = 0;
     h.pos.y = pad.y - SKID_Y - 0.05;
     this.events.push({ type: 'land', pos: h.pos });
+    if (pad.kind === 'start') {
+      const aboard = this.survivors.filter((s) => s.state === 'aboard');
+      aboard.forEach((s, i) => {
+        s.state = 'rescued';
+        this.disembarking.push({ pos: { x: h.pos.x - 10 + i * 6, y: pad.y }, t: -i * 0.25 });
+      });
+      if (aboard.length) {
+        this.events.push({ type: 'rescued', pos: h.pos });
+        if (!this.orb.delivered) this.flash(`${aboard.length} RESCUED`, undefined, COLORS.survivor, 1.6);
+      }
+    }
     if (pad.kind === 'start' && this.orb.delivered && this.phase === 'playing') this.complete();
   }
 
@@ -523,6 +637,7 @@ export class Game {
     this.screenFlash = 1;
     for (const s of hullWorld(h)) this.shatter(s.a, s.b, h.vel, COLORS.heli);
     this.events.push({ type: 'heliDown', pos: h.pos });
+    for (const s of this.survivors) if (s.state === 'aboard' || s.state === 'running') s.state = s.state === 'aboard' ? 'lost' : 'waiting';
     if (this.orb.attached) {
       this.explode(this.orb.pos, 50, 300, COLORS.orb);
       this.orb.attached = false;
@@ -541,7 +656,7 @@ export class Game {
     if (orb.delivered) return;
 
     if (!orb.attached) {
-      if (!input.pickup || !this.tetherArmed || this.orbLostTimer > 0) return;
+      if (!input.pickup || this.spaceMode !== 'tether' || this.orbLostTimer > 0) return;
       const anchor = heliPoint(h, ANCHOR);
       const d = dist(anchor, orb.pos);
       if (d > L + 0.5) return;
@@ -623,7 +738,7 @@ export class Game {
       t.aim += Math.max(-maxTurn, Math.min(maxTurn, d));
 
       t.cooldown -= dt;
-      const canFire = t.tracking && Math.abs(wrapAngle(want - t.aim)) < 0.12;
+      const canFire = t.tracking && !this.held && Math.abs(wrapAngle(want - t.aim)) < 0.12;
       t.charge = canFire && t.cooldown < cfg.turretCharge ? 1 - Math.max(0, t.cooldown) / cfg.turretCharge : Math.max(0, t.charge - dt * 4);
       if (t.cooldown <= 0) {
         if (canFire) {
@@ -647,6 +762,54 @@ export class Game {
     }
   }
 
+  /** Survivors run to the heli when it's landed nearby, and climb aboard. */
+  private stepSurvivors(dt: number): void {
+    const h = this.heli;
+    const landed = this.alive && h.landed;
+    for (const s of this.survivors) {
+      s.t += dt;
+      if (s.state !== 'waiting' && s.state !== 'running') continue;
+      const dx = h.pos.x - s.pos.x;
+      const sameLevel = Math.abs(h.pos.y + SKID_Y - s.pos.y) < 40;
+      if (landed && sameLevel && Math.abs(dx) < SURVIVOR_CALL_RANGE) {
+        s.state = 'running';
+        s.dir = Math.sign(dx) || 1;
+        s.pos.x += s.dir * Math.min(Math.abs(dx), SURVIVOR_SPEED * dt);
+        const gy = this.groundBelow({ x: s.pos.x, y: s.pos.y - 30 }, 80);
+        if (gy !== null) s.pos.y = gy;
+        if (Math.abs(h.pos.x - s.pos.x) < 8) {
+          s.state = 'aboard';
+          this.events.push({ type: 'board', pos: s.pos });
+          // each survivor you pick up brings a little fuel with them
+          this.fuel = Math.min(this.cfg.fuelMax, this.fuel + this.cfg.rescueFuelBoost);
+        }
+      } else {
+        s.state = 'waiting';
+        s.dir = Math.sign(dx) || s.dir;
+      }
+    }
+    for (const d of this.disembarking) {
+      d.t += dt;
+      if (d.t > 0) d.pos.x -= SURVIVOR_SPEED * dt;
+    }
+    this.disembarking = this.disembarking.filter((d) => d.t < 2.5);
+  }
+
+  /** A live tank roughly below the heli, within reach and in sight. */
+  private tankInReach(): FuelTank | null {
+    const h = this.heli;
+    let best: FuelTank | null = null;
+    for (const t of this.fuelTanks) {
+      if (!t.alive) continue;
+      const top = { x: t.pos.x, y: t.pos.y - TANK_H };
+      const dy = top.y - h.pos.y;
+      if (Math.abs(t.pos.x - h.pos.x) > 45 || dy < 0 || dy > this.cfg.tankReach) continue;
+      if (!this.lineOfSight({ x: h.pos.x, y: h.pos.y + SKID_Y + 2 }, { x: top.x, y: top.y - 1 })) continue;
+      if (!best || dy < best.pos.y - TANK_H - h.pos.y) best = t;
+    }
+    return best;
+  }
+
   private lineOfSight(a: Vec, b: Vec): boolean {
     const near = segmentsNear(this.level, Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
     return !near.some((s) => segmentsIntersect(a, b, s.a, s.b));
@@ -665,7 +828,12 @@ export class Game {
       p.life -= dt;
 
       let hit: Vec | null = null;
-      if (p.kind === 'enemy' && this.alive && dist(p.pos, this.heli.pos) < HULL_RADIUS + 10) {
+      if (p.kind === 'enemy' && this.alive && this.shield && dist(p.pos, this.heli.pos) < SHIELD_RADIUS) {
+        hit = p.pos;
+        this.shieldFlash = 1;
+        this.explode(p.pos, 14, 160, '#7ffcff');
+        this.events.push({ type: 'shieldHit', pos: p.pos });
+      } else if (p.kind === 'enemy' && this.alive && dist(p.pos, this.heli.pos) < HULL_RADIUS + 10) {
         const hull = hullWorld(this.heli);
         if (hull.some((hs) => segmentsIntersect(prev, p.pos, hs.a, hs.b) || distPointSegment(p.pos, hs.a, hs.b) < 2.5)) {
           hit = p.pos;
@@ -676,6 +844,19 @@ export class Game {
       if (!hit && !orb.delivered && this.orbLostTimer <= 0 && distPointSegment(orb.pos, prev, p.pos) < this.cfg.orbRadius + 2) {
         hit = p.pos;
         this.loseOrb('it was shot');
+      }
+      for (const t of hit || p.kind === 'enemy' ? [] : this.fuelTanks) {
+        if (t.alive && distPointSegment(tankCentre(t), prev, p.pos) < TANK_W / 2 + 6) {
+          t.alive = false;
+          hit = p.pos;
+          const c = tankCentre(t);
+          this.explode(c, 60, 320, COLORS.fuel);
+          this.ring(c, 60, COLORS.fuel, 0.5);
+          this.shatter({ x: c.x - TANK_W / 2, y: c.y }, { x: c.x + TANK_W / 2, y: c.y }, { x: 0, y: -150 }, COLORS.fuel);
+          this.shatter({ x: c.x, y: c.y - TANK_H / 2 }, { x: c.x, y: c.y + TANK_H / 2 }, { x: 0, y: -150 }, COLORS.fuel);
+          this.events.push({ type: 'turretDown', pos: c });
+          break;
+        }
       }
       for (const t of hit || p.kind === 'enemy' ? [] : this.turrets) {
         if (t.alive && distPointSegment(turretCentre(t), prev, p.pos) < TURRET_RADIUS + TURRET_HIT_SLACK) {
@@ -775,8 +956,30 @@ export class Game {
     this.rotorPhase += (9 + this.rotorSpeed * 18) * dt; // brisk idle, whirls at full throttle
     this.shake = Math.max(0, this.shake - dt * 2.2);
     this.screenFlash = Math.max(0, this.screenFlash - dt * 4);
+    this.shieldFlash = Math.max(0, this.shieldFlash - dt * 3);
+    if (!this.alive) this.shield = false;
     for (const gt of this.level.gates) gt.fade += ((gt.open ? 1 : 0) - gt.fade) * (1 - Math.exp(-4 * dt));
 
+
+    // fuel flowing up the beam from the tank
+    if (this.fueling && this.alive) {
+      const top = { x: this.fueling.pos.x, y: this.fueling.pos.y - TANK_H };
+      const to = heliPoint(h, { x: 0, y: SKID_Y });
+      for (let i = 0; i < 2; i++) {
+        const k = Math.random();
+        const life = 0.3;
+        this.particles.push({
+          pos: { x: top.x + (to.x - top.x) * k * 0.3 + (Math.random() - 0.5) * 8, y: top.y + (to.y - top.y) * k * 0.3 },
+          vel: { x: (to.x - top.x) / life, y: (to.y - top.y) / life },
+          life,
+          maxLife: life,
+          color: COLORS.fuel,
+          size: 1.2,
+          drag: 0,
+          grav: 0,
+        });
+      }
+    }
 
     // dive: streaks blasted UP out of the rotor disc so you can see the push-down
     if (this.alive && !h.landed && input.dive > 0) {
@@ -953,6 +1156,10 @@ function wrapAngle(a: number): number {
   while (a > Math.PI) a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
   return a;
+}
+
+export function tankCentre(t: FuelTank): Vec {
+  return { x: t.pos.x, y: t.pos.y - TANK_H / 2 };
 }
 
 export function turretCentre(t: Turret): Vec {

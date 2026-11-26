@@ -1,7 +1,7 @@
 import { config } from './config';
-import { COLORS, TURRET_BARREL, TURRET_RADIUS, turretCentre, type Game } from './game';
+import { COLORS, SHIELD_RADIUS, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, turretCentre, type Game } from './game';
 import { clamp, lerp, toDeg, type Vec } from './math';
-import { ANCHOR, BODY, MAST, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
+import { ANCHOR, BODY, MAST, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, SKID_Y, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
 
 const P = (x: number, y: number): Vec => ({ x, y });
 /** Decorative helicopter detail (local space, facing right). Collision shapes are in physics.ts. */
@@ -35,6 +35,9 @@ const C = {
   terrain: '#22e6ff',
   startPad: '#3dff8a',
   bowl: '#ffb020',
+  fuelPad: '#ffe14d',
+  rescuePad: '#9dff9d',
+  shield: '#7ffcff',
   gate: '#ff3d8b',
   rotor: '#e8f6ff',
   rod: '#ffffff',
@@ -158,8 +161,11 @@ export class Renderer {
     this.drawGates(game);
     this.drawBowl(game);
     this.drawTurrets(game);
+    this.drawSurvivors(game);
+    this.drawFuelTanks(game);
     this.drawOrb(game);
     if (game.alive) this.drawHeli(game);
+    if (game.alive && game.shield) this.drawShield(game);
     this.drawProjectiles(game);
     this.drawShards(game);
     this.drawParticles(game);
@@ -293,7 +299,7 @@ export class Renderer {
     for (const p of this.terrainPaths) glow(ctx, p, edge, 2, config.glow);
 
     for (const { pad, pts } of game.level.padPolygons) {
-      const col = C.startPad;
+      const col = pad.kind === 'rescue' ? C.rescuePad : C.startPad;
       const body = new Path2D();
       pts.forEach((v, i) => (i ? body.lineTo(v.x, v.y) : body.moveTo(v.x, v.y)));
       body.closePath();
@@ -314,6 +320,7 @@ export class Renderer {
         ctx.fillStyle = lit ? col : 'rgba(255,255,255,0.15)';
         ctx.fillRect(x - 2, pad.y + 6, 4, 4);
       }
+      if (pad.kind === 'rescue') text(ctx, 'RESCUE', pad.x + pad.w / 2, pad.y + 34, 11, col, 'center', 0.7);
     }
   }
 
@@ -658,6 +665,120 @@ export class Renderer {
     dot(ctx, nav.x, nav.y, 1.1, '#3dff8a');
   }
 
+  /** Fuel tanks: a squat canister with a fill gauge; a beam while you're sucking one dry. */
+  private drawFuelTanks(game: Game): void {
+    const ctx = this.ctx;
+    for (const t of game.fuelTanks) {
+      if (!t.alive) continue;
+      const x0 = t.pos.x - TANK_W / 2;
+      const y0 = t.pos.y - TANK_H;
+      const body = new Path2D();
+      body.moveTo(x0, t.pos.y);
+      body.lineTo(x0, y0 + 5);
+      body.quadraticCurveTo(x0, y0, x0 + 5, y0);
+      body.lineTo(x0 + TANK_W - 5, y0);
+      body.quadraticCurveTo(x0 + TANK_W, y0, x0 + TANK_W, y0 + 5);
+      body.lineTo(x0 + TANK_W, t.pos.y);
+      body.closePath();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgb(24,20,4)';
+      ctx.fill(body);
+      // fuel level
+      const k = t.amount / t.max;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(255,225,77,${0.25 + 0.15 * Math.sin(this.clock * 4 + t.pos.x)})`;
+      const fh = (TANK_H - 6) * k;
+      ctx.fillRect(x0 + 4, t.pos.y - 3 - fh, TANK_W - 8, fh);
+      ctx.restore();
+      const trim = new Path2D(body);
+      trim.moveTo(x0 + TANK_W / 2 - 4, y0);
+      trim.lineTo(x0 + TANK_W / 2 - 4, y0 - 4); // cap
+      trim.lineTo(x0 + TANK_W / 2 + 4, y0 - 4);
+      trim.lineTo(x0 + TANK_W / 2 + 4, y0);
+      glow(ctx, trim, C.fuelPad, 1.5, config.glow);
+      text(ctx, 'F', t.pos.x, t.pos.y - TANK_H / 2, 10, C.fuelPad, 'center', 0.6);
+    }
+    if (game.fueling && game.alive) {
+      const t = game.fueling;
+      const a = toWorld(game.heli.pos, game.heli.tilt, game.facingVis, { x: 0, y: SKID_Y });
+      ctx.save();
+      ctx.setLineDash([5, 6]);
+      ctx.lineDashOffset = this.clock * 80; // dashes run upward, toward the heli
+      const beam = new Path2D();
+      beam.moveTo(t.pos.x, t.pos.y - TANK_H - 4);
+      beam.lineTo(a.x, a.y);
+      glow(ctx, beam, C.fuelPad, 1.4, (0.6 + 0.3 * Math.random()) * config.glow);
+      ctx.restore();
+    }
+  }
+
+  /** Faux-vector stick figures: wave when you're near, run when called, scurry off the pad when home. */
+  private drawSurvivors(game: Game): void {
+    const ctx = this.ctx;
+    const near = (x: number) => Math.abs(game.heli.pos.x - x) < 700 && game.alive;
+    const figure = (x: number, y: number, mode: 'idle' | 'wave' | 'run', dir: number, t: number, alpha = 1) => {
+      const p = new Path2D();
+      const hip = { x, y: y - 7 };
+      const neck = { x, y: y - 15 };
+      p.moveTo(hip.x, hip.y);
+      p.lineTo(neck.x, neck.y); // body
+      p.moveTo(x + 2.6, y - 18.5);
+      p.arc(x, y - 18.5, 2.6, 0, Math.PI * 2); // head
+      const swing = mode === 'run' ? Math.sin(t * 16) * 5 : 0;
+      p.moveTo(hip.x, hip.y);
+      p.lineTo(x - 3 + swing * 0.8, y); // legs
+      p.moveTo(hip.x, hip.y);
+      p.lineTo(x + 3 - swing * 0.8, y);
+      if (mode === 'wave') {
+        const a = -Math.PI / 2 + Math.sin(t * 9) * 0.6;
+        p.moveTo(neck.x, neck.y + 1);
+        p.lineTo(x + Math.cos(a) * 8, neck.y + 1 + Math.sin(a) * 8); // waving arm up
+        p.moveTo(neck.x, neck.y + 1);
+        p.lineTo(x - 4, y - 9);
+      } else {
+        p.moveTo(neck.x, neck.y + 1);
+        p.lineTo(x + dir * 5 - swing * 0.5, y - 10);
+        p.moveTo(neck.x, neck.y + 1);
+        p.lineTo(x - dir * 5 + swing * 0.5, y - 10);
+      }
+      glow(ctx, p, COLORS.survivor, 1.1, alpha * config.glow);
+    };
+    for (const s of game.survivors) {
+      if (s.state === 'waiting') figure(s.pos.x, s.pos.y, near(s.pos.x) ? 'wave' : 'idle', s.dir, s.t);
+      else if (s.state === 'running') figure(s.pos.x, s.pos.y, 'run', s.dir, s.t);
+    }
+    for (const d of game.disembarking) if (d.t > 0) figure(d.pos.x, d.pos.y, 'run', -1, d.t, Math.max(0, 1 - d.t / 2.5));
+  }
+
+  private drawShield(game: Game): void {
+    const ctx = this.ctx;
+    const p = game.heli.pos;
+    const r = SHIELD_RADIUS + Math.sin(this.clock * 23) * 1.2;
+    const flash = game.shieldFlash;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(p.x, p.y, r * 0.55, p.x, p.y, r);
+    g.addColorStop(0, 'rgba(127,252,255,0)');
+    g.addColorStop(1, `rgba(127,252,255,${0.12 + flash * 0.35})`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    const ring = new Path2D();
+    ring.arc(p.x, p.y, r, 0, Math.PI * 2);
+    glow(ctx, ring, C.shield, 1.4 + flash * 1.5, (0.55 + 0.25 * Math.sin(this.clock * 31) + flash) * config.glow);
+    // a few rotating arc segments for a force-field shimmer
+    const arcs = new Path2D();
+    for (let i = 0; i < 3; i++) {
+      const a0 = this.clock * 2.4 + (i * Math.PI * 2) / 3;
+      arcs.moveTo(p.x + Math.cos(a0) * (r - 5), p.y + Math.sin(a0) * (r - 5));
+      arcs.arc(p.x, p.y, r - 5, a0, a0 + 0.7);
+    }
+    glow(ctx, arcs, '#ffffff', 1, (0.35 + flash) * config.glow);
+  }
+
   private drawShards(game: Game): void {
     for (const s of game.shards) {
       const c = Math.cos(s.ang);
@@ -785,11 +906,29 @@ export class Renderer {
     const alive = game.turrets.filter((t) => t.alive).length;
     text(ctx, `TURRETS ${alive}/${game.turrets.length}`, this.w - 24, 34, 14, COLORS.target, 'right');
     text(ctx, `DEATHS ${game.deaths}`, this.w - 24, 54, 12, C.hud, 'right', 0.8);
+    if (game.survivors.length) {
+      const saved = game.survivors.filter((s) => s.state === 'rescued').length;
+      text(ctx, `RESCUED ${saved}/${game.survivors.length}`, this.w - 24, 90, 12, COLORS.survivor, 'right', 0.85);
+    }
     text(ctx, `TIME ${(game.completedAt ?? game.time).toFixed(1)}`, this.w - 24, 72, 12, C.hud, 'right', 0.8);
 
-    // instrument cluster (room reserved to the right of it for FUEL / SHIELD later)
+    // instrument cluster
     const bx = 24;
     const by = this.h - 30;
+    // fuel gauge (above the thrust bar)
+    const fuelK = clamp(game.fuel / config.fuelMax, 0, 1);
+    const low = fuelK < 0.2;
+    const blinkOn = Math.sin(this.clock * 9) > 0;
+    text(ctx, game.fuel <= 0 ? 'NO FUEL' : 'FUEL', bx, by - 66, 11, low ? '#ff4a4a' : C.fuelPad, 'left', low && !blinkOn ? 0.35 : 0.85);
+    if (game.refueling) text(ctx, 'REFUELING', bx + 160, by - 66, 11, C.fuelPad, 'right', 0.5 + 0.5 * Math.sin(this.clock * 8));
+    else if (game.shield) text(ctx, 'SHIELD', bx + 160, by - 66, 11, C.shield, 'right', 0.7 + 0.3 * Math.sin(this.clock * 20));
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(255,225,77,0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by - 58, 160, 10);
+    ctx.fillStyle = low ? 'rgba(255,74,74,0.85)' : 'rgba(255,225,77,0.85)';
+    ctx.fillRect(bx + 1, by - 57, 158 * fuelK, 8);
+
     text(ctx, 'THRUST', bx, by - 26, 11, C.hud, 'left', 0.8);
     const bw = 160;
     ctx.globalCompositeOperation = 'lighter';
@@ -840,6 +979,8 @@ export class Renderer {
     text(ctx, h.facing === 1 ? 'FACING ▶' : '◀ FACING', gx + 90, by - 14, 13, COLORS.heli, 'center');
     const orbState = game.orb.delivered ? 'DELIVERED' : game.orb.attached ? 'ON ROD' : game.orb.free ? 'DROPPED' : 'NOT HELD';
     text(ctx, `ORB ${orbState}`, gx + 90, by + 4, 11, COLORS.orb, 'center', game.orb.attached ? 1 : 0.6);
+    const aboard = game.survivors.filter((s) => s.state === 'aboard').length;
+    if (aboard) text(ctx, `ABOARD ${aboard}`, gx + 90, by - 32, 11, COLORS.survivor, 'center', 0.9);
 
     const approach = game.orbApproach();
     if (approach) {
@@ -866,7 +1007,7 @@ export class Renderer {
     if (this.helpVisible) {
       const lines = [
         '←/→ or A/D  tilt      ↑ or W  rotor      ↓ or S  dive',
-        'Z or J  fire      X or K  flip facing      SPACE  hold: tether · tap: release',
+        'Z or J  fire      X or K  flip facing      SPACE  hold: shield + tether · tap: release orb',
         'R restart · Tab/P pause · M mute · 1-9 level · T tuning panel · H hide this',
       ];
       lines.forEach((l, i) => text(ctx, l, this.w / 2, this.h - 70 + i * 17, 12, C.hud, 'center', 0.55));

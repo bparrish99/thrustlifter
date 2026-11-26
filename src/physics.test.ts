@@ -458,3 +458,249 @@ describe('Deep Caverns is flyable', () => {
     for (const t of LEVELS[1].turrets) expect(clearance(level, t), `turret at ${t.x},${t.y}`).toBeLessThan(1.5);
   });
 });
+
+describe('checkpoints (internal)', () => {
+  it('dying after delivery respawns you hovering above the bowl, held until you touch the controls', () => {
+    const g = new Game(provingGround as LevelData);
+    g.orb.delivered = true;
+    g.heli.landed = false;
+    g.heli.pos = { x: 700, y: 600 };
+    g.heli.vel = { x: 0, y: 400 };
+    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60); // crash, then wait out the respawn
+    expect(g.phase).toBe('playing');
+    expect(g.held).toBe(true);
+    expect(g.heli.landed).toBe(false);
+    expect(Math.abs(g.heli.pos.x - g.level.bowl.cx)).toBeLessThan(1);
+    const y0 = g.heli.pos.y;
+    for (let i = 0; i < 60; i++) g.update(idle, 1 / 60);
+    expect(g.heli.pos.y).toBe(y0); // hangs in place, no gravity
+    g.update({ ...idle, tiltAxis: 1 }, 1 / 60);
+    expect(g.held).toBe(false);
+    for (let i = 0; i < 30; i++) g.update(idle, 1 / 60);
+    expect(g.heli.pos.y).toBeGreaterThan(y0); // now gravity applies
+  });
+
+  it('dying before delivery still sends you back to the launch pad', () => {
+    const g = new Game(provingGround as LevelData);
+    g.heli.landed = false;
+    g.heli.pos = { x: 700, y: 600 };
+    g.heli.vel = { x: 0, y: 400 };
+    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.heli.landed).toBe(true);
+    expect(g.held).toBe(false);
+  });
+});
+
+describe('fuel and shield', () => {
+  const airborne = () => {
+    const g = new Game(provingGround as LevelData);
+    g.heli.landed = false;
+    g.heli.pos = { x: 1300, y: 200 };
+    return g;
+  };
+
+  it('thrust burns fuel; running dry means no thrust', () => {
+    const g = airborne();
+    const f0 = g.fuel;
+    for (let i = 0; i < 60; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
+    expect(g.fuel).toBeLessThan(f0 - cfg.fuelBurn * 0.9);
+    g.fuel = 0;
+    g.heli.vel = { x: 0, y: 0 };
+    for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
+    expect(g.heli.throttle).toBe(0);
+    expect(g.heli.vel.y).toBeGreaterThan(0); // falling
+  });
+
+  it('hovering over a fuel tank holding Space sucks it up until it runs dry', () => {
+    // Proving Ground tank at (1300, 830)
+    const g = new Game(provingGround as LevelData);
+    const tank = g.fuelTanks.find((t) => t.pos.x === 1300)!;
+    g.fuel = 10;
+    g.heli.landed = false;
+    let seconds = 0;
+    for (let i = 0; i < 3 * 60 && tank.alive; i++, seconds += 1 / 60) {
+      g.heli.pos = { x: 1300, y: 830 - 22 - 90 };
+      g.heli.vel = { x: 0, y: 0 };
+      g.update({ ...idle, pickup: true }, 1 / 60);
+    }
+    expect(tank.alive).toBe(false); // drained tanks disappear
+    expect(g.fuel).toBeGreaterThan(10 + cfg.tankAmount - 1); // got the whole tank: no shield burn while fuelling
+    expect(seconds).toBeGreaterThan(0);
+  });
+
+  it('Space near a tank never raises the shield, and it stays off after the tank runs dry until Space is pressed again', () => {
+    const g = new Game(provingGround as LevelData);
+    const tank = g.fuelTanks.find((t) => t.pos.x === 1300)!;
+    g.fuel = 10;
+    g.heli.landed = false;
+    const hover = (input: Partial<FrameInput>) => {
+      g.heli.pos = { x: 1300, y: 830 - 22 - 90 };
+      g.heli.vel = { x: 0, y: 0 };
+      g.update({ ...idle, ...input }, 1 / 60);
+    };
+    hover({ pickup: true, pickupPressed: true });
+    expect(g.refueling).toBe(true);
+    expect(g.shield).toBe(false);
+    for (let i = 0; i < 3 * 60 && tank.alive; i++) hover({ pickup: true });
+    expect(tank.alive).toBe(false);
+    for (let i = 0; i < 20; i++) hover({ pickup: true }); // still holding Space
+    expect(g.shield).toBe(false);
+    hover({}); // let go
+    hover({ pickup: true, pickupPressed: true }); // press again
+    expect(g.shield).toBe(true);
+  });
+
+  it('fuel tanks can be shot', () => {
+    const g = new Game(provingGround as LevelData);
+    const tank = g.fuelTanks.find((t) => t.pos.x === 1300)!;
+    g.projectiles.push({ kind: 'missile', pos: { x: 1230, y: 819 }, vel: { x: 600, y: 0 }, life: 1, dir: { x: 1, y: 0 }, base: { x: 0, y: 0 }, speed: 600 });
+    for (let i = 0; i < 30; i++) g.update(idle, 1 / 60);
+    expect(tank.alive).toBe(false);
+  });
+
+  it('pads do not refuel; each survivor who climbs aboard adds a little fuel', () => {
+    const g = new Game(provingGround as LevelData);
+    g.fuel = 20;
+    g.heli.landed = false;
+    g.heli.pos = { x: 3080, y: 825 };
+    g.heli.vel = { x: 0, y: 20 };
+    g.heli.tilt = g.heli.tiltTarget = 0;
+    for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
+    const landedFuel = g.fuel;
+    expect(landedFuel).toBeLessThan(21); // no pad refuel/boost
+    for (let i = 0; i < 3 * 60; i++) g.update(idle, 1 / 60); // both survivors run over and board
+    expect(g.survivors.every((s) => s.state === 'aboard')).toBe(true);
+    expect(g.fuel).toBeCloseTo(landedFuel + 2 * cfg.rescueFuelBoost, 0);
+  });
+
+  it('no refuel on death (beyond a small safety reserve)', () => {
+    const g = new Game(provingGround as LevelData);
+    g.fuel = 40;
+    g.heli.landed = false;
+    g.heli.pos = { x: 700, y: 600 };
+    g.heli.vel = { x: 0, y: 400 };
+    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.fuel).toBeLessThan(42);
+    expect(g.fuel).toBeGreaterThan(30);
+    const g2 = new Game(provingGround as LevelData);
+    g2.fuel = 0;
+    g2.heli.landed = false;
+    g2.heli.pos = { x: 700, y: 600 };
+    g2.heli.vel = { x: 0, y: 400 };
+    for (let i = 0; i < 4 * 60; i++) g2.update(idle, 1 / 60);
+    expect(g2.fuel).toBeCloseTo(cfg.fuelRespawnMin, 0);
+  });
+
+  it('holding Space raises a shield that burns fuel and absorbs enemy shots', () => {
+    const g = airborne();
+    g.turrets.forEach((t) => (t.alive = false));
+    const f0 = g.fuel;
+    g.update({ ...idle, rotor: 0.5, pickup: true }, 1 / 60);
+    expect(g.shield).toBe(true);
+    g.projectiles.push({ kind: 'enemy', pos: { x: 1300, y: 300 }, vel: { x: 0, y: -300 }, life: 2 });
+    for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 0.5, pickup: true }, 1 / 60);
+    expect(g.phase).toBe('playing');
+    expect(g.projectiles.filter((p) => p.kind === 'enemy').length).toBe(0);
+    expect(g.fuel).toBeLessThan(f0 - cfg.shieldBurn * 0.4);
+  });
+
+  it('no shield while carrying the orb (Space releases instead)', () => {
+    const g = airborne();
+    g.orb.attached = true;
+    g.orb.pos = { x: 1300, y: 200 + 16 + cfg.rodLength };
+    g.update({ ...idle, pickup: true }, 1 / 60);
+    expect(g.shield).toBe(false);
+  });
+});
+
+describe('survivors', () => {
+  // Proving Ground: fuel pad at x 3020..3140 (top 850), survivors at x 3165 and 3185 on ground y 860.
+  const landOnFuelPad = (g: Game) => {
+    g.heli.landed = false;
+    g.heli.pos = { x: 3080, y: 790 };
+    g.heli.vel = { x: 0, y: 40 };
+    g.heli.tilt = g.heli.tiltTarget = 0;
+    for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
+  };
+
+  it('run to the heli when it lands nearby and climb aboard', () => {
+    const g = new Game(provingGround as LevelData);
+    landOnFuelPad(g);
+    expect(g.heli.landed).toBe(true);
+    for (let i = 0; i < 3 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.survivors.every((s) => s.state === 'aboard')).toBe(true);
+  });
+
+  it('are counted as rescued when you land back on your pad, and lost if you crash with them', () => {
+    const g = new Game(provingGround as LevelData);
+    g.survivors[0].state = 'aboard';
+    g.survivors[1].state = 'aboard';
+    g.heli.landed = false;
+    g.heli.pos = { x: 280, y: 790 };
+    g.heli.vel = { x: 0, y: 40 };
+    for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
+    expect(g.survivors.every((s) => s.state === 'rescued')).toBe(true);
+
+    const g2 = new Game(provingGround as LevelData);
+    g2.survivors[0].state = 'aboard';
+    g2.heli.landed = false;
+    g2.heli.pos = { x: 700, y: 600 };
+    g2.heli.vel = { x: 0, y: 400 };
+    for (let i = 0; i < 60 && g2.phase === 'playing'; i++) g2.update(idle, 1 / 60);
+    expect(g2.survivors[0].state).toBe('lost');
+  });
+});
+
+describe('level sanity', () => {
+  it('no fuel tank sits close enough to an orb for Space to reach both', () => {
+    for (const data of LEVELS) {
+      for (const t of data.fuelTanks ?? []) {
+        // to use a tank you must be within 45 sideways of it; the tether reaches rodLength
+        const d = Math.abs(t.x - data.orb.x);
+        expect(d, `${data.name}: tank at ${t.x},${t.y} is ${Math.round(d)} sideways from the orb`).toBeGreaterThan(cfg.rodLength + 45 + 40);
+      }
+    }
+  });
+});
+
+describe('shield vs tether', () => {
+  it('no shield while the orb is within tether reach, nor after leaving it until Space is pressed again', () => {
+    const g = new Game(provingGround as LevelData);
+    g.heli.landed = false;
+    const at = (y: number, input: Partial<FrameInput>) => {
+      g.heli.pos = { x: g.orb.home.x, y };
+      g.heli.vel = { x: 0, y: 0 };
+      g.update({ ...idle, ...input }, 1 / 60);
+    };
+    at(g.orb.home.y - 100, { pickup: true, pickupPressed: true }); // anchor ~84 from the orb: in reach
+    expect(g.beam).toBe(true);
+    expect(g.shield).toBe(false);
+    at(g.orb.home.y - 400, { pickup: true }); // out of reach, still holding
+    expect(g.shield).toBe(false);
+    at(g.orb.home.y - 400, {});
+    at(g.orb.home.y - 400, { pickup: true, pickupPressed: true });
+    expect(g.shield).toBe(true);
+  });
+});
+
+describe('Space never switches abilities mid-press', () => {
+  it('a press that starts as a shield stays a shield over a tank and near the orb', () => {
+    const g = new Game(provingGround as LevelData);
+    g.fuel = 50;
+    g.heli.landed = false;
+    const at = (x: number, y: number, input: Partial<FrameInput>) => {
+      g.heli.pos = { x, y };
+      g.heli.vel = { x: 0, y: 0 };
+      g.update({ ...idle, ...input }, 1 / 60);
+    };
+    at(1300, 300, { pickup: true, pickupPressed: true }); // open sky: shield
+    expect(g.shield).toBe(true);
+    at(1300, 830 - 22 - 90, { pickup: true }); // now over the tank
+    expect(g.refueling).toBe(false);
+    expect(g.shield).toBe(true);
+    at(g.orb.home.x, g.orb.home.y - 100, { pickup: true }); // now in orb range
+    expect(g.beam).toBe(false);
+    expect(g.orb.attached).toBe(false);
+    expect(g.shield).toBe(true);
+  });
+});

@@ -25,8 +25,11 @@ no matter how hard a level gets.** Every system gets judged against that.
 | Orb destruction | The orb **explodes if it touches anything except the bowl** (ground, turrets), carried or dropped, **or if it's shot** (by anything, including your own weapons). **The pilot does not die.** The orb respawns on its pedestal after ~2s. |
 | Mission complete | Choplifter-style: after the orb is in the bowl, **fly back and land on your start pad**. A HUD hint points the way home. |
 | Collision | Heli touching anything = death (terrain, turrets, a loose orb). The exception is skids landing gently and level on a pad. The rod passes through terrain for now. The rod crossing the rotor = "rotor strike" death. |
-| Out of scope | No reactor, no inverse gravity. Probably no tractor beam. |
-| Leave room for | Fuel, shields (HUD space is reserved; pads could refuel). |
+| Shield | **Space does double duty:** hold = shield + tether beam + fuel-tank suction (Thrust-style) when not carrying; while carrying, no shield, tap = release. The shield absorbs enemy shots (not terrain). **Each Space press does exactly one thing, decided the moment it goes down, and never switches until released:** orb in reach → tether; else fuel tank in reach → refuel; else → shield; carrying → release. (E.g. a shield press stays a shield even over a tank; a tether press does nothing once the orb drifts out of reach.) |
+| Fuel | Thrust (incl. dive) and the shield burn fuel; out of fuel = no thrust/shield. **Refuel Thrust-style from fuel tanks**: hover over one and hold Space to suck it up (limited amount; empties and vanishes; can be shot). **No refuel on death** (small safety reserve so you're never stranded on the pad). **Each survivor who climbs aboard adds a little fuel**; pads never refuel. Low-fuel warning beeps. Tunable ("Fuel & shield" folder). |
+| Survivors | Choplifter-style **optional bonus**: little figures waiting near green **rescue pads** (pads exist only for rescues; each survivor picked up brings a small fuel boost) wave at you, run aboard when you land nearby, and count as rescued when you land on your start pad. Crash with them aboard and they're lost. Shown as RESCUED x/y and on the mission-complete line. |
+| Checkpoints | **Internal, never announced.** Die before delivering: back to the launch pad. Die after delivering: respawn hovering at the level's `delivery` checkpoint (default: above the bowl), **held in place until you touch a control** (turrets hold fire meanwhile). Closes the "crash, hop, land" exploit. |
+| Out of scope | No reactor, no inverse gravity. |
 | Gravity | Gentle, Thrust-like. Playtest-tuned defaults: gravity 230, thrust 645, max horizontal speed 335, dive 170, max tilt 50°. The first defaults (320/850) were far too violent. With the orb, full thrust holds altitude up to ~43° of tilt; past that (up to the 50° max) you sink. |
 | Turrets | Big enough to hit with dumb-fire missiles (generous hit area). They track you, **telegraph each shot with a visible charge-up glow**, then fire a slow, dodgeable shot. They need line of sight, range and a firing arc around the way they face, so they can sit on floors, ceilings or walls. A hit kills you or destroys the orb. Range, interval, charge time, shot speed, aim lead and arc are tunable ("Enemies" folder). Combat stays secondary to flying. **Placement rule: only put turrets where the player can dodge and shoot back.** You can't fire upward (missiles stay within ±45° of horizontal), and there are no shields yet, so no turrets above you in vertical shafts or in spots you're forced through. |
 | Gates | Energy barriers in level data: `closes: pickup` seals the way in when you grab the orb; `opens: delivery` opens a way out when it's delivered. They reset if you die before delivering. This is how levels force a separate return path. |
@@ -43,7 +46,7 @@ Level-design hook: the return trip doesn't have to retrace the outbound route. L
 ## Milestones
 
 - **M0, lug test** (current): one surface level, heli, orb, rod, orb bowl, inert turrets, missiles/bombs, live tuning panel. *Goal: is carrying the orb fun?*
-- **M1, combat basics**: turrets that shoot ✅, flying enemies, fuel/shields decision.
+- **M1, combat basics**: turrets that shoot ✅, shields + fuel ✅, survivors ✅, checkpoints ✅, flying enemies.
 - **M2, caverns**: underground levels ✅ (Deep Caverns), level sequencing ✅, gates ✅, a level editor.
 - **M3, glitz pass**: WebGL bloom, audio, screen effects, menus.
 
@@ -54,6 +57,5 @@ Frames the ground under you (highest of 5 probes across a strip, eased, so gaps 
 ## Open questions
 
 - Should the rod collide with terrain (Thrust's didn't)?
-- Fuel and shields: if added, does the shield block the tether like Thrust's did?
-- Lives and scoring model.
+- Lives and scoring model (survivor rescues are the first bonus).
 - What a "harder level" means beyond tighter terrain: gravity per level, wind, heavier orbs, longer or shorter rods?

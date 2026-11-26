@@ -4,7 +4,7 @@ import type { FrameInput } from './game';
  * Keyboard (two layouts work at once):
  *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z fire, X flip
  *   WASD:   A/D tilt, W rotor, S dive   with  J fire, K flip
- *   Space   hold = tether (pick up orb); press while carrying = release
+ *   Space   hold = shield + tether beam; tap while carrying the orb = release (no shield while carrying)
  *   R restart · P/Esc/Tab pause · T tuning panel · H help · M mute · N next level (after completing) · 1-9 jump to level
  *
  * Gamepad (standard mapping):

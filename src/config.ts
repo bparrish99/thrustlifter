@@ -31,6 +31,17 @@ export const DEFAULTS = {
   orbMaxImpact: 240, // orb shatters if it hits anything head-on faster than this (glancing hits count less)
   orbBounce: 0.45, // how bouncy a released orb is (0 = dead, 1 = superball)
 
+  // Fuel & shield. Thrust (and dive) and the shield burn fuel. Refuel by hovering over fuel
+  // tanks holding Space; each survivor picked up adds a little. No refuel on death.
+  fuelMax: 100,
+  fuelBurn: 1.6, // per second at full throttle (dive burns the same)
+  shieldBurn: 9, // per second while the shield is up
+  tankRate: 30, // fuel sucked per second from a tank
+  tankAmount: 35, // fuel in a tank (levels can override per tank)
+  tankReach: 170, // how far above a tank you can hover and still suck from it
+  rescueFuelBoost: 10, // fuel added for each survivor who climbs aboard
+  fuelRespawnMin: 12, // safety net: if you respawn with less than this, you get topped up to it
+
   // Landing (skids on a pad only)
   landMaxSpeed: 95,
   landMaxTiltDeg: 10,

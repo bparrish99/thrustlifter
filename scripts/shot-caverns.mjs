@@ -55,7 +55,7 @@ await at('2-orb-chamber', 1000, 1250, 900);
 await at('3-carry-passage', 1550, 1262, 900, `g.orb.attached = true; g.orb.pos = { x: 1540, y: 1388 };`);
 await at('4-drop-shaft', 2025, 1650, 900, `g.orb.attached = true; g.orb.pos = { x: 2025, y: 1776 };`);
 await at('5-lower-tunnel', 2600, 1800, 900, `g.orb.attached = true; g.orb.pos = { x: 2590, y: 1926 };`);
-await at('6-bowl-chamber', 3720, 1650, 900, `g.orb.attached = true; g.orb.pos = { x: 3715, y: 1776 };`);
+await at('6-bowl-chamber', 3900, 2000, 900, `g.orb.attached = false; g.phase = 'playing';`);
 await at('7-exit-open', 4090, 1250, 900, `g.orb.attached = false; g.orb.pos = { x: -99999, y: -99999 }; g.level.gates[1].open = true;`);
 await at('8-turret-closeup', 1150, 420, 500);
 

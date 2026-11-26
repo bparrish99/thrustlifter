@@ -4,7 +4,8 @@ export interface PadData {
   x: number;
   y: number; // top surface
   w: number;
-  kind: 'start';
+  /** start = launch/return pad; rescue = where survivors wait. Each pad gives a one-time fuel boost. */
+  kind: 'start' | 'rescue';
 }
 
 /** Plain-JSON level format (hand-authored now, editor-authored later). */
@@ -21,6 +22,14 @@ export interface LevelData {
   /** Energy barriers. `opens: 'delivery'` starts closed and opens when the orb is delivered;
    *  `closes: 'pickup'` starts open and seals when you first grab the orb. */
   gates?: { poly: number[]; opens?: 'delivery'; closes?: 'pickup' }[];
+  /** Fuel tanks sitting on the ground at (x,y): hover over one and hold Space to suck it up. Shootable. */
+  fuelTanks?: { x: number; y: number; amount?: number }[];
+  /** Little people to rescue (optional bonus): feet at (x,y) on the ground, near a pad. */
+  survivors?: { x: number; y: number }[];
+  /** Invisible respawn points (heli reappears hovering, held until you touch the controls).
+   *  `after: 'delivery'` applies once the orb is delivered. If a level has none, the game
+   *  uses a point above the bowl. */
+  checkpoints?: { x: number; y: number; after: 'delivery' }[];
   /** Below this y, empty space shows a dark cave backdrop instead of sky. */
   backdropY?: number;
   /** Turrets sit at (x,y) on a surface. dir = direction they face in degrees (-90 = up, 90 = hanging from a ceiling). */

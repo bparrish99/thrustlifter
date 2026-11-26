@@ -37,6 +37,20 @@ const FOLDERS: [string, Spec[], boolean][] = [
     true,
   ],
   [
+    'Fuel & shield',
+    [
+      ['fuelMax', 10, 400, 5, 'fuel tank'],
+      ['fuelBurn', 0, 10, 0.1, 'thrust burn /s'],
+      ['shieldBurn', 0, 40, 0.5, 'shield burn /s'],
+      ['tankRate', 1, 200, 1, 'tank suck rate /s'],
+      ['tankAmount', 5, 200, 1, 'fuel per tank'],
+      ['tankReach', 40, 400, 5, 'tank reach'],
+      ['rescueFuelBoost', 0, 100, 1, 'fuel per survivor'],
+      ['fuelRespawnMin', 0, 100, 1, 'respawn fuel minimum'],
+    ],
+    false,
+  ],
+  [
     'Body & world',
     [
       ['heliMass', 0.2, 5, 0.05, 'heli mass'],
