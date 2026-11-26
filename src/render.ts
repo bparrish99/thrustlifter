@@ -56,6 +56,7 @@ export class Renderer {
   private terrainPaths: Path2D[] = [];
   private terrainFor: unknown = null;
   private cam = { x: 0, y: 0, init: false };
+  private groundY: number | null = null;
   helpVisible = true;
   paused = false;
   private clock = 0;
@@ -110,6 +111,7 @@ export class Renderer {
       this.buildTerrain(game);
       this.terrainFor = game.level;
       this.cam.init = false;
+      this.groundY = null;
     }
     const scale = (this.h / config.viewHeight) * 1;
     this.updateCamera(game, dt, scale);
@@ -185,17 +187,36 @@ export class Renderer {
   private updateCamera(game: Game, dt: number, scale: number): void {
     const h = game.heli;
     let tx = h.pos.x + h.vel.x * config.camLookahead;
-    // Frame the ground under you: aim to put it at camGround (fraction down the screen),
-    // but never push the heli above 15% from the top or below 60% (sky when landed or low).
     const vh = config.viewHeight;
     const base = h.pos.y + h.vel.y * config.camLookahead;
-    const gy = game.groundBelow(h.pos);
-    let ty = gy === null ? base + vh * 0.2 : gy - vh * (config.camGround - 0.5);
-    ty = clamp(ty, base - vh * 0.1, base + vh * 0.35);
+
+    // Ground under you: the HIGHEST of several probes across a strip, so crossing a gap
+    // (shaft mouth) or a cliff edge doesn't make the reading plunge; then eased over time.
+    let gy: number | null = null;
+    for (const dx of [-110, -55, 0, 55, 110]) {
+      const g = game.groundBelow({ x: h.pos.x + dx, y: h.pos.y });
+      if (g !== null && g > h.pos.y + 10 && (gy === null || g < gy)) gy = g;
+    }
+    if (gy !== null) gy = Math.min(gy, h.pos.y + vh * 0.7); // don't chase floors far below
+    if (gy !== null) {
+      this.groundY = this.groundY === null ? gy : this.groundY + (gy - this.groundY) * (1 - Math.exp(-2.5 * dt));
+    } else {
+      this.groundY = null;
+    }
+    const ceil = game.ceilingAbove(h.pos, vh);
+
+    // Frame: put the ground at camGround down the screen. In an enclosed space (floor and
+    // ceiling both in view), centre between them instead.
+    let ty = this.groundY === null ? base + vh * 0.2 : this.groundY - vh * (config.camGround - 0.5);
+    if (ceil !== null && this.groundY !== null && this.groundY - ceil < vh * 0.85) ty = (ceil + this.groundY) / 2;
     if (game.orb.attached) {
       tx = lerp(tx, game.orb.pos.x, 0.3);
-      ty = lerp(ty, game.orb.pos.y, 0.3);
+      ty = lerp(ty, game.orb.pos.y, 0.25);
     }
+    // Keep the heli between 22% and 60% from the top (clear of the centre messages), and the faster you climb, the more
+    // room you get above you (so shafts don't hide what's coming).
+    const climb = clamp(-h.vel.y / 220, 0, 1);
+    ty = clamp(ty, base - vh * (0.1 + 0.15 * climb), base + vh * (0.28 - 0.38 * climb));
     if (!game.alive) {
       tx = this.cam.x;
       ty = this.cam.y;
@@ -721,10 +742,6 @@ export class Renderer {
         tail.lineTo(p.pos.x - (p.vel.x / sp) * 10, p.pos.y - (p.vel.y / sp) * 10);
         glow(ctx, tail, COLORS.enemyShot, 2, 0.6 * config.glow);
         dot(ctx, p.pos.x, p.pos.y, 3, COLORS.enemyShot);
-      } else {
-        const path = new Path2D();
-        path.arc(p.pos.x, p.pos.y, 4.5, 0, Math.PI * 2);
-        glow(ctx, path, COLORS.bomb, 1.6, config.glow);
       }
     }
   }
@@ -831,9 +848,7 @@ export class Renderer {
       text(ctx, `max impact ${config.orbMaxImpact}`, this.w / 2, this.h - 130, 11, C.hud, 'center', 0.7);
     }
 
-    if (game.bombBlockedFlash > 0) {
-      text(ctx, 'BOMB BAY BLOCKED BY ORB', this.w / 2, this.h - 110, 13, COLORS.bomb, 'center', game.bombBlockedFlash);
-    } else if (game.orbInReach() && !game.beam) {
+    if (game.orbInReach() && !game.beam) {
       text(ctx, 'HOLD SPACE TO TETHER', this.w / 2, this.h - 110, 13, COLORS.orb, 'center', 0.6 + 0.4 * Math.sin(this.clock * 6));
     } else if (game.beam) {
       text(ctx, 'TETHERING — PULL AWAY TO LOCK THE ROD', this.w / 2, this.h - 110, 13, COLORS.orb, 'center');
@@ -844,15 +859,15 @@ export class Renderer {
       const fadeIn = clamp(m.t / 0.15, 0, 1);
       const fadeOut = clamp((m.life - m.t) / 0.4, 0, 1);
       const a = Math.min(fadeIn, fadeOut);
-      text(ctx, m.text, this.w / 2, this.h * 0.13, 42, m.color, 'center', a);
-      if (m.sub) text(ctx, m.sub, this.w / 2, this.h * 0.13 + 32, 14, C.hud, 'center', a * 0.85);
+      text(ctx, m.text, this.w / 2, this.h * 0.1, 40, m.color, 'center', a);
+      if (m.sub) text(ctx, m.sub, this.w / 2, this.h * 0.1 + 30, 14, C.hud, 'center', a * 0.85);
     }
 
     if (this.helpVisible) {
       const lines = [
-        '←/→ or A/D  tilt     ↑ or W  rotor     ↓ or S  dive     C or L  flip facing',
-        'Z or J  missile      X or K  bomb      SPACE  hold: tether · tap: release',
-        'R restart · P pause · M mute · 1-9 level · T tuning panel · H hide this',
+        '←/→ or A/D  tilt      ↑ or W  rotor      ↓ or S  dive',
+        'Z or J  fire      X or K  flip facing      SPACE  hold: tether · tap: release',
+        'R restart · Tab/P pause · M mute · 1-9 level · T tuning panel · H hide this',
       ];
       lines.forEach((l, i) => text(ctx, l, this.w / 2, this.h - 70 + i * 17, 12, C.hud, 'center', 0.55));
     }

@@ -2,13 +2,13 @@ import type { FrameInput } from './game';
 
 /*
  * Keyboard (two layouts work at once):
- *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z missile, X bomb, C flip
- *   WASD:   A/D tilt, W rotor, S dive   with  J missile, K bomb, L flip
+ *   Arrows: ←/→ tilt, ↑ rotor, ↓ dive   with  Z fire, X flip
+ *   WASD:   A/D tilt, W rotor, S dive   with  J fire, K flip
  *   Space   hold = tether (pick up orb); press while carrying = release
- *   R restart · P/Esc pause · T tuning panel · H help · M mute · N next level (after completing) · 1-9 jump to level
+ *   R restart · P/Esc/Tab pause · T tuning panel · H help · M mute · N next level (after completing) · 1-9 jump to level
  *
  * Gamepad (standard mapping):
- *   Left stick X tilt · RT (analog) or A rotor · LT (analog) or stick down dive · X/RB missile · B bomb · Y flip
+ *   Left stick X tilt · RT (analog) or A rotor · LT (analog) or stick down dive · X/RB fire · B or Y flip
  *   LB tether · Start restart · Back pause
  */
 
@@ -34,7 +34,7 @@ export class Input {
       if (isTextField(e.target)) return;
       if (!e.repeat) this.pressed.add(e.code);
       this.down.add(e.code);
-      if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+      if (e.code.startsWith('Arrow') || e.code === 'Space' || e.code === 'Tab') e.preventDefault(); // Tab pauses instead of moving focus
     });
     target.addEventListener('keyup', (e) => this.down.delete(e.code));
     target.addEventListener('blur', () => this.down.clear());
@@ -53,12 +53,11 @@ export class Input {
     let rotor = this.k('ArrowUp', 'KeyW') ? 1 : 0;
     let dive = this.k('ArrowDown', 'KeyS') ? 1 : 0;
     let fire = this.k('KeyZ', 'KeyJ');
-    let bomb = this.k('KeyX', 'KeyK');
-    let flip = this.p('KeyC', 'KeyL');
+    let flip = this.p('KeyX', 'KeyK', 'KeyC', 'KeyL');
     let pickup = this.k('Space');
     let pickupPressed = this.p('Space');
     let restart = this.p('KeyR');
-    let pause = this.p('KeyP', 'Escape');
+    let pause = this.p('KeyP', 'Escape', 'Tab');
     const toggleTuning = this.p('KeyT', 'Backquote');
     const toggleHelp = this.p('KeyH');
     const toggleMute = this.p('KeyM');
@@ -76,8 +75,7 @@ export class Input {
       const ay = pad.axes[1] ?? 0;
       dive = Math.max(dive, pad.buttons[6]?.value ?? 0, ay > DEADZONE ? (ay - DEADZONE) / (1 - DEADZONE) : 0);
       fire ||= b(2) || b(5);
-      bomb ||= b(1);
-      flip ||= edge(3);
+      flip ||= edge(3) || edge(1);
       pickup ||= b(4);
       pickupPressed ||= edge(4);
       restart ||= edge(9);
@@ -88,7 +86,7 @@ export class Input {
     this.pressed.clear();
     tiltAxis = Math.max(-1, Math.min(1, tiltAxis));
     return {
-      game: { tiltAxis, rotor, dive, fire, bomb, flip, pickup, pickupPressed, restart },
+      game: { tiltAxis, rotor, dive, fire, flip, pickup, pickupPressed, restart },
       meta: { pause, toggleTuning, toggleHelp, toggleMute, nextLevel, jumpLevel },
     };
   }

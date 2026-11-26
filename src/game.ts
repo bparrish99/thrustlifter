@@ -3,9 +3,10 @@ import { buildLevel, resetGates, segmentsNear, type Level, type LevelData, type 
 import { add, closestPointSegment, deg, dist, distPointSegment, dot, len, scale, segmentIntersectionT, segmentsIntersect, sub, type Vec } from './math';
 import {
   ANCHOR,
-  BOMB_BAY,
   HULL_RADIUS,
   NOSE,
+  ROTOR_R,
+  ROTOR_Y,
   SKID_Y,
   createHeli,
   heliPoint,
@@ -25,7 +26,6 @@ export interface FrameInput {
   rotor: number;
   dive: number; // 0..1, arcade 'push down' (not realistic, on purpose)
   fire: boolean;
-  bomb: boolean;
   flip: boolean; // edge
   pickup: boolean; // held: tether
   pickupPressed: boolean; // edge: release when carrying
@@ -41,7 +41,7 @@ export interface Orb extends Body {
 }
 
 export interface Projectile {
-  kind: 'missile' | 'bomb' | 'enemy';
+  kind: 'missile' | 'enemy';
   pos: Vec;
   vel: Vec;
   life: number;
@@ -63,7 +63,7 @@ export interface Turret {
 
 /** Things that happened this frame, for sound (and anything else that wants to react). */
 export type GameEvent =
-  | { type: 'gate' | 'missile' | 'bomb' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'bigImpact' | 'liftoff' | 'land'; pos?: Vec };
+  | { type: 'gate' | 'missile' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'liftoff' | 'land'; pos?: Vec };
 
 export interface Particle {
   pos: Vec;
@@ -115,7 +115,6 @@ export const COLORS = {
   heli: '#ffd23f',
   orb: '#ff3df2',
   missile: '#7dffb0',
-  bomb: '#ff9a3c',
   target: '#ff4a4a',
   enemyShot: '#ff6a3d',
   spark: ['#ffffff', '#ffd23f', '#ff8a3d', '#ff3df2'],
@@ -148,7 +147,6 @@ export class Game {
   rotorSpin = 0; // eases toward throttle (drives sound intensity)
   rotorSpeed = 0; // visual rotor speed 0..1: rotorSpin, but never below a floor while airborne
   private rotorFloor = 0;
-  bombBlockedFlash = 0;
   lastCrash = '';
   lastOrbLoss = '';
   completedAt: number | null = null;
@@ -158,8 +156,6 @@ export class Game {
 
   private acc = 0;
   private missileCd = 0;
-  private bombCd = 0;
-  private prevBomb = false;
 
   readonly levelNumber: number;
   readonly hasNextLevel: boolean;
@@ -578,7 +574,6 @@ export class Game {
     const h = this.heli;
     const cfg = this.cfg;
     this.missileCd -= dt;
-    this.bombCd -= dt;
 
     if (input.fire && this.missileCd <= 0 && !h.landed) {
       this.missileCd = cfg.missileCooldown;
@@ -596,17 +591,6 @@ export class Game {
       this.events.push({ type: 'missile', pos: heliPoint(h, NOSE) });
     }
 
-    const bombEdge = input.bomb && !this.prevBomb;
-    this.prevBomb = input.bomb;
-    if (input.bomb && this.orb.attached) {
-      if (bombEdge) this.bombBlockedFlash = 1;
-    } else if (input.bomb && this.bombCd <= 0 && !h.landed) {
-      this.bombCd = cfg.bombCooldown;
-      // pushed out of the bay: a little down, a little toward where you're facing
-      const vel = { x: h.vel.x + h.facing * cfg.bombForwardSpeed, y: h.vel.y + cfg.bombDropSpeed };
-      this.projectiles.push({ kind: 'bomb', pos: heliPoint(h, BOMB_BAY), vel, life: 6 });
-      this.events.push({ type: 'bomb', pos: heliPoint(h, BOMB_BAY) });
-    }
   }
 
   /** Turrets track the heli, telegraph with a charge glow, then fire. Line of sight and a firing arc required. */
@@ -672,7 +656,6 @@ export class Game {
     const keep: Projectile[] = [];
     for (const p of this.projectiles) {
       const prev = { ...p.pos };
-      if (p.kind === 'bomb') p.vel.y += this.cfg.gravity * dt;
       if (p.kind === 'missile' && p.dir && p.base && p.speed !== undefined) {
         p.speed = Math.min(this.cfg.missileSpeed, p.speed + this.cfg.missileAccel * dt);
         p.vel = add(p.base, scale(p.dir, p.speed));
@@ -727,10 +710,9 @@ export class Game {
             if (p.kind === 'enemy') {
               this.explode(hit, 8, 120, COLORS.enemyShot);
             } else {
-              this.explode(hit, p.kind === 'bomb' ? 40 : 18, p.kind === 'bomb' ? 280 : 180, p.kind === 'bomb' ? COLORS.bomb : COLORS.missile);
-              this.events.push({ type: p.kind === 'bomb' ? 'bigImpact' : 'impact', pos: hit });
+              this.explode(hit, 18, 180, COLORS.missile);
+              this.events.push({ type: 'impact', pos: hit });
             }
-            if (p.kind === 'bomb') this.ring(hit, 45, COLORS.bomb, 0.4);
             break;
           }
         }
@@ -792,10 +774,31 @@ export class Game {
     this.rotorSpeed = Math.max(this.rotorSpin, this.rotorFloor);
     this.rotorPhase += (9 + this.rotorSpeed * 18) * dt; // brisk idle, whirls at full throttle
     this.shake = Math.max(0, this.shake - dt * 2.2);
-    this.bombBlockedFlash = Math.max(0, this.bombBlockedFlash - dt * 1.5);
     this.screenFlash = Math.max(0, this.screenFlash - dt * 4);
     for (const gt of this.level.gates) gt.fade += ((gt.open ? 1 : 0) - gt.fade) * (1 - Math.exp(-4 * dt));
 
+
+    // dive: streaks blasted UP out of the rotor disc so you can see the push-down
+    if (this.alive && !h.landed && input.dive > 0) {
+      const n = rotorNormal(h.tilt);
+      const rate = input.dive * 70;
+      const count = Math.floor(rate * dt) + (Math.random() < (rate * dt) % 1 ? 1 : 0);
+      for (let i = 0; i < count; i++) {
+        const p = heliPoint(h, { x: (Math.random() * 2 - 1) * ROTOR_R * 0.9, y: ROTOR_Y - 2 });
+        const sp = 170 + Math.random() * 130;
+        const life = 0.2 + Math.random() * 0.15;
+        this.particles.push({
+          pos: p,
+          vel: { x: h.vel.x + n.x * sp, y: h.vel.y + n.y * sp },
+          life,
+          maxLife: life,
+          color: '#a8dcff',
+          size: 0.8,
+          drag: 1,
+          grav: 0,
+        });
+      }
+    }
 
     for (const s of this.shards) {
       s.life -= dt;
@@ -920,6 +923,17 @@ export class Game {
       if (t !== null && (best === null || t < best)) best = t;
     }
     return best === null ? null : p.y + best * maxDist;
+  }
+
+  /** y of the first solid surface straight above p (within maxDist), or null. */
+  ceilingAbove(p: Vec, maxDist = 1500): number | null {
+    const to = { x: p.x, y: p.y - maxDist };
+    let best: number | null = null;
+    for (const s of segmentsNear(this.level, p.x - 1, to.y, p.x + 1, p.y)) {
+      const t = segmentIntersectionT(p, to, s.a, s.b);
+      if (t !== null && (best === null || t < best)) best = t;
+    }
+    return best === null ? null : p.y - best * maxDist;
   }
 
   /** Signed horizontal distance from the heli to the start pad centre (for the return-to-base hint). */

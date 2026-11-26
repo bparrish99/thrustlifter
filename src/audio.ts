@@ -220,11 +220,6 @@ export class Sound {
         this.noiseHit(t, { dur: 1.0, type: 'bandpass', f0: 700, f1: 1300, q: 0.9, gain: 0.55 * v, attack: 0.04 });
         this.noiseHit(t, { dur: 1.1, type: 'lowpass', f0: 700, f1: 250, gain: 0.7 * v, attack: 0.03, brown: true });
         break;
-      case 'bomb': // bay clunk with a metallic ring
-        this.tone(t, { type: 'triangle', f0: 260, f1: 110, dur: 0.25, gain: 0.5 * v });
-        this.ring(t, 1150, 0.5, 0.3 * v);
-        this.noiseHit(t, { dur: 0.2, type: 'lowpass', f0: 500, f1: 150, gain: 0.4 * v, brown: true });
-        break;
       case 'enemyShot': // deep "thoom" rather than a pew
         this.tone(t, { type: 'sine', f0: 230, f1: 85, dur: 0.45, gain: 0.45 * v });
         this.tone(t, { type: 'square', f0: 460, f1: 180, dur: 0.3, gain: 0.07 * v, lowpass: 1100 });
@@ -232,9 +227,6 @@ export class Sound {
         break;
       case 'impact': // missile hits rock
         this.boom(t, 0.35, v);
-        break;
-      case 'bigImpact': // bomb
-        this.boom(t, 0.8, v);
         break;
       case 'turretDown':
         this.boom(t, 0.9, v);

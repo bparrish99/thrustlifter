@@ -45,3 +45,4 @@ requestAnimationFrame(frame);
 // handy for poking at things from the browser console
 (window as unknown as { game: Game; sound: Sound }).game = game;
 (window as unknown as { sound: Sound }).sound = sound;
+(window as unknown as { renderer: Renderer }).renderer = renderer;

@@ -49,7 +49,6 @@ export const SKID: [Vec, Vec] = [P(-14, SKID_Y), P(14, SKID_Y)];
 export const SKID_TOE: [Vec, Vec] = [P(14, SKID_Y), P(18, SKID_Y - 3)];
 export const ANCHOR = P(0, 16); // rod hook, just under the skids
 export const NOSE = P(22, 3);
-export const BOMB_BAY = P(0, 17);
 export const TAIL_ROTOR_HUB = P(-47, -5);
 export const TAIL_ROTOR_R = 6.5;
 

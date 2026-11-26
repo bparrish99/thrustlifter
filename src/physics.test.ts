@@ -9,7 +9,7 @@ import { buildLevel, segmentsNear, type Level } from './level';
 import { ANCHOR, createHeli, heliPoint, integrate, noseDir, rotorNormal, solveRod, thrustForce, type Body } from './physics';
 
 const cfg = { ...DEFAULTS };
-const idle: FrameInput = { tiltAxis: 0, rotor: 0, dive: 0, fire: false, bomb: false, flip: false, pickup: false, pickupPressed: false, restart: false };
+const idle: FrameInput = { tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false, restart: false };
 
 describe('geometry', () => {
   it('tilting right points the rotor up-right and dips the nose when facing right', () => {
@@ -80,7 +80,7 @@ describe('game', () => {
     expect(cfg.maxThrust).toBeGreaterThan(total);
   });
 
-  it('tethers the orb when pulling away to rod length, and bombs are then blocked', () => {
+  it('tethers the orb when pulling away to rod length', () => {
     const g = new Game(provingGround as LevelData);
     const orb = g.orb;
     g.heli.landed = false;
@@ -90,10 +90,6 @@ describe('game', () => {
     for (let i = 0; i < 40 && !orb.attached; i++) g.update({ ...idle, rotor: 1, pickup: true }, 1 / 60);
     expect(orb.attached).toBe(true);
     expect(g.phase).toBe('playing');
-    const before = g.projectiles.length;
-    g.update({ ...idle, rotor: 1, bomb: true }, 1 / 60);
-    expect(g.projectiles.length).toBe(before);
-    expect(g.bombBlockedFlash).toBeGreaterThan(0);
   });
 
   it('crashes when flown into the ground', () => {
@@ -137,16 +133,6 @@ describe('weapons', () => {
     expect(s0).toBeLessThan(cfg.missileSpeed * 0.5);
     for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
     expect(m.speed).toBe(cfg.missileSpeed);
-  });
-
-  it('bombs drop with a downward and forward kick', () => {
-    const g = flying();
-    g.heli.facing = -1;
-    g.heli.vel = { x: 0, y: 0 };
-    g.update({ ...idle, rotor: 1, bomb: true }, STEP);
-    const b = g.projectiles.find((p) => p.kind === 'bomb')!;
-    expect(b.vel.y).toBeGreaterThan(cfg.bombDropSpeed * 0.9);
-    expect(b.vel.x).toBeLessThan(-cfg.bombForwardSpeed * 0.9); // facing left => forward is -x
   });
 });
 
