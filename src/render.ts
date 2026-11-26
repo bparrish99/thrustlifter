@@ -1,5 +1,5 @@
 import { config } from './config';
-import { BALLOON_R, COLORS, SHIELD_RADIUS, balloonGun, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, toWorldPoint, turretCentre, type Game } from './game';
+import { BALLOON_R, COLORS, FUEL_TICKS, POINTS, SHIELD_RADIUS, balloonGun, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, toWorldPoint, turretCentre, type Game } from './game';
 import { clamp, lerp, type Vec } from './math';
 import { ANCHOR, BODY, MAST, NOSE, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, SKID_Y, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
 
@@ -48,7 +48,8 @@ const C = {
   startPad: '#3dff8a',
   bowl: '#ffb020',
   fuelPad: '#ffe14d',
-  rescuePad: '#9dff9d',
+  padEnemy: '#ff3b3b',
+  padSafe: '#ffd23f',
   shield: '#7ffcff',
   gate: '#ff3d8b',
   rotor: '#e8f6ff',
@@ -176,6 +177,7 @@ export class Renderer {
     ctx.translate(-this.cam.x, -this.cam.y);
 
     this.drawBackdrop(game);
+    this.drawPedestal(game); // before the rock, so its buried foot is hidden
     this.drawTerrain(game);
     this.drawGates(game);
     this.drawBowl(game);
@@ -328,7 +330,12 @@ export class Renderer {
     for (const p of this.terrainPaths) glow(ctx, p, edge, 2, config.glow);
 
     for (const { pad, pts } of game.level.padPolygons) {
-      const col = pad.kind === 'rescue' ? C.rescuePad : C.startPad;
+      // your pad: steady green. Rescue (enemy) pads: blinking red, turning yellow once you're
+      // close enough that no new guard will spawn there.
+      const rescue = pad.kind === 'rescue';
+      const near = rescue && game.alive && Math.hypot(game.heli.pos.x - (pad.x + pad.w / 2), game.heli.pos.y - pad.y) < config.enemySpawnClear;
+      const col = !rescue ? C.startPad : near ? C.padSafe : C.padEnemy;
+      const flash = rescue ? 0.55 + 0.45 * (Math.sin(this.clock * (near ? 5 : 7)) > 0 ? 1 : 0) : 1;
       const body = new Path2D();
       pts.forEach((v, i) => (i ? body.lineTo(v.x, v.y) : body.moveTo(v.x, v.y)));
       body.closePath();
@@ -339,17 +346,16 @@ export class Renderer {
       const top = new Path2D();
       top.moveTo(pad.x, pad.y);
       top.lineTo(pad.x + pad.w, pad.y);
-      glow(ctx, top, col, 3, config.glow);
+      glow(ctx, top, col, 3, flash * config.glow);
       // landing lights
       const blink = Math.floor(this.clock * 2) % 2 === 0;
       for (let i = 0; i <= 4; i++) {
         const x = pad.x + (pad.w * i) / 4;
         const lit = (i % 2 === 0) === blink;
         ctx.globalCompositeOperation = 'lighter';
-        ctx.fillStyle = lit ? col : 'rgba(255,255,255,0.15)';
+        ctx.fillStyle = lit && (!rescue || flash > 0.6) ? col : 'rgba(255,255,255,0.15)';
         ctx.fillRect(x - 2, pad.y + 6, 4, 4);
       }
-      if (pad.kind === 'rescue') text(ctx, 'RESCUE', pad.x + pad.w / 2, pad.y + 34, 11, col, 'center', 0.7);
     }
   }
 
@@ -415,6 +421,46 @@ export class Renderer {
     }
   }
 
+  /** Orb pedestal: a dark metal plinth with a glowing cradle; the glow fades once the orb leaves. */
+  private drawPedestal(game: Game): void {
+    const ctx = this.ctx;
+    const pts = game.level.pedestal;
+    const path = new Path2D();
+    pts.forEach((v, i) => (i ? path.lineTo(v.x, v.y) : path.moveTo(v.x, v.y)));
+    path.closePath();
+    const home = game.orb.home;
+    const top = home.y + 16.5;
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    const g = ctx.createLinearGradient(home.x - 24, 0, home.x + 24, 0);
+    g.addColorStop(0, 'rgb(40,20,50)');
+    g.addColorStop(0.5, 'rgb(22,10,30)');
+    g.addColorStop(1, 'rgb(10,4,16)');
+    ctx.fillStyle = g;
+    ctx.fill(path);
+    ctx.restore();
+    const resting = !game.orb.attached && !game.orb.free && !game.orb.delivered && game.orb.pos.x === home.x && game.orb.pos.y === home.y;
+    const pulse = 0.7 + 0.3 * Math.sin(this.clock * 3);
+    glow(ctx, path, COLORS.orb, 1.4, (resting ? 0.9 : 0.4) * config.glow);
+    // glowing bands down the column
+    const bands = new Path2D();
+    for (const dy of [18, 30]) {
+      bands.moveTo(home.x - 14 - dy * 0.06, top + dy);
+      bands.lineTo(home.x + 14 + dy * 0.06, top + dy);
+    }
+    glow(ctx, bands, COLORS.orb, 1, (resting ? 0.6 * pulse : 0.2) * config.glow);
+    if (resting) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const halo = ctx.createRadialGradient(home.x, top, 0, home.x, top, 40);
+      halo.addColorStop(0, `rgba(255,61,242,${0.35 * pulse})`);
+      halo.addColorStop(1, 'rgba(255,61,242,0)');
+      ctx.fillStyle = halo;
+      ctx.fillRect(home.x - 40, top - 30, 80, 50);
+      ctx.restore();
+    }
+  }
+
   private drawBowl(game: Game): void {
     const ctx = this.ctx;
     const bowl = game.level.bowl;
@@ -459,7 +505,6 @@ export class Renderer {
         glow(ctx, c, col, 1.8, (0.25 + i * 0.25) * config.glow);
       }
     }
-    text(ctx, done ? 'DELIVERED' : 'ORB BOWL', bowl.cx, bowl.rimY - 86, 14, col, 'center', done ? 1 : 0.85);
   }
 
   /** Gun emplacements: bolted armour base, faceted dome, twin barrels with a muzzle block, sensor slit. */
@@ -870,10 +915,10 @@ export class Renderer {
     this.fuelNeedle += (k - this.fuelNeedle) * (1 - Math.exp(-6 * this.frameDt));
     const low = k < 0.2;
     const blinkOn = Math.sin(this.clock * 9) > -0.1;
-    const segs = 24;
-    const ledW = 16;
-    const ledH = 24;
-    const gap = 5;
+    const segs = FUEL_TICKS;
+    const ledW = 20;
+    const ledH = 32;
+    const gap = 6;
     const innerW = segs * ledW + (segs - 1) * gap;
     const pad = 12;
     const w = innerW + pad * 2;
@@ -948,8 +993,26 @@ export class Renderer {
       ctx.fill();
       ctx.restore();
     }
-    text(ctx, 'E', x0 - 14, y0 + h / 2, 13, '#ff6a6a', 'center', 0.8);
-    text(ctx, 'F', x0 + w + 14, y0 + h / 2, 13, C.fuelPad, 'center', 0.8);
+    text(ctx, 'E', x0 - 22, y0 + h / 2, 24, '#ff6a6a', 'center', 0.9);
+    text(ctx, 'F', x0 + w + 22, y0 + h / 2, 24, '#50ff78', 'center', 0.9);
+  }
+
+  /** The end-of-level bonus tally, big in the middle of the screen. */
+  private drawTally(game: Game, y: number): void {
+    const t = game.tally!;
+    const ctx = this.ctx;
+    const timeOn = t.stage === 'time' || t.stage === 'intro' || t.stage === 'pause';
+    const pulse = 1 + 0.06 * Math.sin(this.clock * 30);
+    // time bonus line
+    const tt = game.bonusTime;
+    const clock = `${Math.floor(tt / 60)}:${(tt % 60).toFixed(1).padStart(4, '0')}`;
+    text(ctx, 'TIME BONUS', this.w / 2 - 30, y + 40, 30, C.hud, 'right', timeOn ? 1 : 0.45);
+    text(ctx, clock, this.w / 2 + 30, y + 40, 52 * (t.stage === 'time' ? pulse : 1), t.tenths > 0 ? '#3dff8a' : 'rgba(61,255,138,0.45)', 'left');
+    // fuel bonus line
+    const fuelOn = t.stage === 'fuel';
+    text(ctx, 'FUEL BONUS', this.w / 2 - 30, y + 110, 30, C.fuelPad, 'right', fuelOn ? 1 : 0.45);
+    text(ctx, `${t.ticks} × ${POINTS.perFuelTick}`, this.w / 2 + 30, y + 110, 52 * (fuelOn ? pulse : 1), t.ticks > 0 ? C.fuelPad : 'rgba(255,225,77,0.45)', 'left');
+    void ctx;
   }
 
   /** A tiny helicopter silhouette for the lives display. */
@@ -1008,8 +1071,14 @@ export class Renderer {
       // hazard bands
       trim.moveTo(x0, t.pos.y - 7);
       trim.lineTo(x0 + TANK_W, t.pos.y - 7);
+      // fuel-drop glyph on the side
+      const dx = t.pos.x;
+      const dy = t.pos.y - TANK_H / 2 - 1;
+      trim.moveTo(dx, dy - 8);
+      trim.quadraticCurveTo(dx + 6, dy, dx + 5, dy + 3);
+      trim.arc(dx, dy + 3, 5, 0, Math.PI);
+      trim.quadraticCurveTo(dx - 6, dy, dx, dy - 8);
       glow(ctx, trim, C.fuelPad, 1.5, config.glow);
-      text(ctx, 'FUEL', t.pos.x, t.pos.y - TANK_H / 2, 11, C.fuelPad, 'center', 0.65);
     }
     if (game.fueling && game.alive) {
       const t = game.fueling;
@@ -1208,32 +1277,36 @@ export class Renderer {
     this.scorePop = Math.max(0, this.scorePop - this.frameDt * 2.5);
 
     // ---- top left: score + lives, in neon brackets
-    brackets(ctx, 14, 10, 270, 128, COLORS.heli, 0.55);
+    brackets(ctx, 14, 10, 380, 176, COLORS.heli, 0.6);
     const pop = this.scorePop;
-    text(ctx, String(game.score).padStart(6, '0'), 30, 46, 44 + pop * 8, pop > 0 ? '#fff4b0' : COLORS.heli, 'left');
-    text(ctx, 'SCORE', 32, 78, 13, C.hud, 'left', 0.75);
-    for (let i = 0; i < Math.max(0, game.lives); i++) this.drawLifeIcon(58 + i * 66, 106, 0.72);
+    text(ctx, String(game.score).padStart(6, '0'), 32, 60, 66 + pop * 12, pop > 0 ? '#fff4b0' : COLORS.heli, 'left');
+    text(ctx, 'SCORE', 36, 106, 20, C.hud, 'left', 0.85);
+    const lf = game.lifeFlash;
+    for (let i = 0; i < Math.max(0, game.lives); i++) this.drawLifeIcon(70 + i * 84, 148, 0.95 * (i === game.lives - 1 ? 1 + lf * 0.4 * Math.abs(Math.sin(this.clock * 10)) : 1));
+    if (lf > 0) text(ctx, '1UP!', 70 + game.lives * 84 - 14, 148, 34, '#3dff8a', 'left', Math.min(1, lf * 2));
 
     // ---- top right: time, rescued, orb lamp, in neon brackets
-    brackets(ctx, this.w - 280, 10, 266, 128, C.hud, 0.55);
-    const t = game.completedAt ?? game.time;
+    brackets(ctx, this.w - 380, 10, 366, 196, C.hud, 0.6);
+    const t = game.bonusTime;
     const mm = Math.floor(t / 60);
     const ss = (t % 60).toFixed(1).padStart(4, '0');
-    text(ctx, `${mm}:${ss}`, this.w - 30, 44, 38, C.hud, 'right');
+    const out = t <= 0;
+    text(ctx, `${mm}:${ss}`, this.w - 32, 58, 60, out ? 'rgba(159,232,255,0.4)' : C.hud, 'right');
+    text(ctx, 'TIME BONUS', this.w - 32, 100, 20, C.hud, 'right', out ? 0.35 : 0.85);
     if (game.survivors.length) {
       const saved = game.survivors.filter((s) => s.state === 'rescued').length;
-      text(ctx, `RESCUED ${saved}/${game.survivors.length}`, this.w - 30, 82, 20, COLORS.survivor, 'right', 0.95);
+      text(ctx, `RESCUED ${saved}/${game.survivors.length}`, this.w - 32, 136, 28, COLORS.survivor, 'right', 1);
     }
-    const lx = this.w - 44;
-    const ly = 112;
+    const lx = this.w - 50;
+    const ly = 176;
     const lit = game.orb.delivered;
-    text(ctx, 'ORB', lx - 26, ly, 16, COLORS.orb, 'right', lit ? 1 : 0.45);
+    text(ctx, 'ORB', lx - 30, ly, 26, COLORS.orb, 'right', lit ? 1 : 0.5);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = lit ? COLORS.orb : 'rgba(255,61,242,0.4)';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(lx, ly, 12, 0, Math.PI * 2);
+    ctx.arc(lx, ly, 15, 0, Math.PI * 2);
     ctx.stroke();
     if (lit) {
       const pulse = 0.8 + 0.2 * Math.sin(this.clock * 5);
@@ -1257,14 +1330,18 @@ export class Renderer {
       const fadeIn = clamp(m.t / 0.15, 0, 1);
       const fadeOut = clamp((m.life - m.t) / 0.4, 0, 1);
       const a = Math.min(fadeIn, fadeOut);
-      text(ctx, m.text, this.w / 2, this.h * 0.1, 40, m.color, 'center', a);
-      if (m.sub) text(ctx, m.sub, this.w / 2, this.h * 0.1 + 30, 14, C.hud, 'center', a * 0.85);
+      // below the corner panels, and shrunk only if the screen is too narrow for it
+      const size = Math.min(68, (this.w * 0.92) / (m.text.length * 0.62));
+      const my = 250;
+      text(ctx, m.text, this.w / 2, my, size, m.color, 'center', a);
+      if (m.sub) text(ctx, m.sub, this.w / 2, my + size * 0.75, Math.min(24, (this.w * 0.92) / (m.sub.length * 0.62)), C.hud, 'center', a * 0.9);
+      if (game.tally && game.tally.stage !== 'done') this.drawTally(game, my + size * 0.9);
     }
 
     if (this.paused) {
       ctx.fillStyle = 'rgba(2,1,9,0.55)';
       ctx.fillRect(0, 0, this.w, this.h);
-      text(ctx, 'PAUSED', this.w / 2, this.h / 2, 48, C.hud, 'center');
+      text(ctx, 'PAUSED', this.w / 2, this.h / 2, 96, C.hud, 'center');
     }
   }
 }

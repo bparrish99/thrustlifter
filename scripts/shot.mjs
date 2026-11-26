@@ -33,7 +33,7 @@ await page.screenshot({ path: 'shots/1-start.png' });
 await page.evaluate(() => {
   const g = window.game;
   const o = g.orb;
-  g.heli.landed = false;
+  g.heli.landed = false; g.onLaunchPad = false;
   g.heli.throttle = 0.9;
   g.heli.pos = { x: o.home.x + 40, y: o.home.y - 260 };
   g.heli.tilt = g.heli.tiltTarget = 0.4;
@@ -63,7 +63,7 @@ await page.keyboard.press('KeyT');
 await page.evaluate(() => {
   const g = window.game;
   const b = g.level.bowl;
-  g.heli.landed = false;
+  g.heli.landed = false; g.onLaunchPad = false;
   g.heli.throttle = 0;
   g.heli.pos = { x: b.cx - 30, y: b.rimY - 200 };
   g.heli.vel = { x: 0, y: 0 };
@@ -81,7 +81,7 @@ await page.keyboard.press('KeyH');
 await page.evaluate(() => {
   const g = window.game;
   g.cfg.viewHeight = 260;
-  g.heli.landed = false;
+  g.heli.landed = false; g.onLaunchPad = false;
   g.heli.pos = { x: 1300, y: 500 };
   g.heli.vel = { x: 0, y: 0 };
   g.heli.tilt = g.heli.tiltTarget = 0.2;
@@ -114,7 +114,7 @@ await page.keyboard.press('KeyR');
 await page.evaluate(() => {
   const g = window.game;
   g.cfg.viewHeight = 560;
-  g.heli.landed = false;
+  g.heli.landed = false; g.onLaunchPad = false;
   g.turrets[0].cooldown = 0.9;
   const pin = setInterval(() => {
     g.heli.pos = { x: 1090, y: 470 };

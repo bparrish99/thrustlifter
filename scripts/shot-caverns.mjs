@@ -34,7 +34,7 @@ async function at(name, x, y, viewHeight, setup = '') {
   await page.evaluate(([x, y, vh, setup]) => {
     const g = window.game;
     g.cfg.viewHeight = vh;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.turrets.forEach((t) => (t.cooldown = 99)); // hold fire for clean shots
     // eslint-disable-next-line no-new-func
     new Function('g', setup)(g);

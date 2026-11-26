@@ -1,6 +1,7 @@
 {
   "name": "PROVING GROUND",
   "width": 4200,
+  "targetTime": 90,
   "startFuelMin": 45,
   "checkpoints": [{ "x": 3700, "y": 626, "after": "delivery", "fuel": 35 }],
   "terrain": [
@@ -23,9 +24,6 @@
       1860, 840,
       2000, 880,
       2080, 880,
-      2090, 840,
-      2150, 840,
-      2160, 880,
       2300, 880,
       2380, 760,
       2500, 720,

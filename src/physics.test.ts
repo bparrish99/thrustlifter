@@ -85,7 +85,7 @@ describe('game', () => {
   it('tethers the orb when pulling away to rod length', () => {
     const g = new Game(provingGround as LevelData);
     const orb = g.orb;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: orb.pos.x, y: orb.pos.y - 19 - 80 };
     g.heli.vel = { x: 0, y: -60 };
     g.heli.throttle = 1;
@@ -96,7 +96,7 @@ describe('game', () => {
 
   it('crashes when flown into the ground', () => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 700, y: 600 };
     g.heli.vel = { x: 0, y: 400 };
     for (let i = 0; i < 120 && g.phase === 'playing'; i++) g.update(idle, 1 / 60);
@@ -121,7 +121,7 @@ describe('max horizontal speed', () => {
 describe('weapons', () => {
   const flying = () => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 1300, y: 300 };
     g.heli.throttle = 1;
     return g;
@@ -142,7 +142,7 @@ describe('dive', () => {
   it('holding dive accelerates the heli downward faster than gravity alone', () => {
     const run = (dive: number) => {
       const g = new Game(provingGround as LevelData);
-      g.heli.landed = false;
+      g.heli.landed = false; g.onLaunchPad = false;
       g.heli.pos = { x: 1300, y: 200 };
       for (let i = 0; i < 30; i++) g.update({ ...idle, dive }, 1 / 60);
       return g.heli.vel.y;
@@ -157,7 +157,7 @@ describe('orb bowl, release and return to base', () => {
   /** Heli parked high in the sky (hovering), orb free at `orbPos` moving at `vel`. */
   const dropScene = (orbPos: { x: number; y: number }, vel = { x: 0, y: 0 }) => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: g.level.bowl.cx, y: -600 };
     g.orb.free = true;
     g.orb.pos = { ...orbPos };
@@ -170,7 +170,7 @@ describe('orb bowl, release and return to base', () => {
 
   it('tapping Space while carrying releases the orb, keeping its momentum', () => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 1300, y: 200 };
     g.orb.attached = true;
     g.orb.pos = { x: 1300, y: 200 + 16 + cfg.rodLength };
@@ -216,7 +216,7 @@ describe('orb bowl, release and return to base', () => {
     const g = new Game(provingGround as LevelData);
     const b = g.level.bowl;
     const orbPos = { x: b.cx, y: b.rest.y - 6 };
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: orbPos.x, y: orbPos.y - cfg.rodLength - 16 };
     g.heli.vel = { x: 0, y: 30 };
     g.orb.attached = true;
@@ -233,7 +233,7 @@ describe('orb bowl, release and return to base', () => {
     const b = g.level.bowl;
     const orbPos = { x: b.cx, y: b.rest.y - 4 };
     const v = cfg.orbMaxImpact * 1.6;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: orbPos.x, y: orbPos.y - cfg.rodLength - 16 };
     g.heli.vel = { x: 0, y: v };
     g.orb.attached = true;
@@ -247,7 +247,7 @@ describe('orb bowl, release and return to base', () => {
 
   it('a carried orb dragged into the ground is destroyed and respawns; the pilot lives', () => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 3000, y: 860 - 16 - cfg.rodLength - 30 }; // flat ground at y=860 around x=3000..3200
     g.orb.attached = true;
     g.orb.pos = { x: 3000, y: g.heli.pos.y + 16 + cfg.rodLength };
@@ -278,7 +278,7 @@ describe('orb bowl, release and return to base', () => {
     const g = new Game(provingGround as LevelData);
     const pad = g.level.startPad;
     const hop = () => {
-      g.heli.landed = false;
+      g.heli.landed = false; g.onLaunchPad = false;
       g.heli.pos = { x: pad.x + pad.w / 2, y: pad.y - 60 };
       g.heli.vel = { x: 0, y: 30 };
       g.heli.tilt = g.heli.tiltTarget = 0;
@@ -299,7 +299,7 @@ describe('turrets', () => {
   const scene = (heliPos: { x: number; y: number }) => {
     const g = new Game(noGuards);
     g.balloons = []; // turrets only
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { ...heliPos };
     g.turrets.forEach((t, i) => (t.alive = i === 0));
     g.turrets[0].cooldown = 0.8;
@@ -340,7 +340,7 @@ describe('turrets', () => {
       turrets: [{ x: 300, y: 800 }],
     };
     const g = new Game(level);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 700, y: 500 }; // in range, inside the arc, but behind the wall
     g.turrets[0].cooldown = 0.5;
     for (let i = 0; i < 5 * 60 && g.phase === 'playing'; i++) {
@@ -477,7 +477,7 @@ describe('checkpoints (internal)', () => {
   it('dying after delivery respawns you hovering above the bowl, held until you touch the controls', () => {
     const g = new Game(provingGround as LevelData);
     g.orb.delivered = true;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 700, y: 600 };
     g.heli.vel = { x: 0, y: 400 };
     for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60); // crash, then wait out the respawn
@@ -496,7 +496,7 @@ describe('checkpoints (internal)', () => {
 
   it('dying before delivery still sends you back to the launch pad', () => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 700, y: 600 };
     g.heli.vel = { x: 0, y: 400 };
     for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
@@ -508,7 +508,7 @@ describe('checkpoints (internal)', () => {
 describe('fuel and shield', () => {
   const airborne = () => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 1300, y: 200 };
     return g;
   };
@@ -530,7 +530,7 @@ describe('fuel and shield', () => {
     const g = new Game(provingGround as LevelData);
     const tank = g.fuelTanks.find((t) => t.pos.x === 1300)!;
     g.fuel = 10;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     let seconds = 0;
     for (let i = 0; i < 3 * 60 && tank.alive; i++, seconds += 1 / 60) {
       g.heli.pos = { x: 1300, y: 830 - TANK_H - 90 };
@@ -546,7 +546,7 @@ describe('fuel and shield', () => {
     const g = new Game(provingGround as LevelData);
     const tank = g.fuelTanks.find((t) => t.pos.x === 1300)!;
     g.fuel = 10;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     const hover = (input: Partial<FrameInput>) => {
       g.heli.pos = { x: 1300, y: 830 - TANK_H - 90 };
       g.heli.vel = { x: 0, y: 0 };
@@ -575,7 +575,7 @@ describe('fuel and shield', () => {
   it('pads do not refuel; each survivor who climbs aboard adds a little fuel', () => {
     const g = new Game(noGuards);
     g.fuel = 20;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 3080, y: 825 };
     g.heli.vel = { x: 0, y: 20 };
     g.heli.tilt = g.heli.tiltTarget = 0;
@@ -591,7 +591,7 @@ describe('fuel and shield', () => {
     const crashWith = (fuel: number) => {
       const g = new Game(provingGround as LevelData);
       g.fuel = fuel;
-      g.heli.landed = false;
+      g.heli.landed = false; g.onLaunchPad = false;
       g.heli.pos = { x: 700, y: 600 };
       g.heli.vel = { x: 0, y: 400 };
       for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
@@ -628,7 +628,7 @@ describe('fuel and shield', () => {
 describe('survivors', () => {
   // Proving Ground: fuel pad at x 3020..3140 (top 850), survivors at x 3165 and 3185 on ground y 860.
   const landOnFuelPad = (g: Game) => {
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 3080, y: 790 };
     g.heli.vel = { x: 0, y: 40 };
     g.heli.tilt = g.heli.tiltTarget = 0;
@@ -647,7 +647,7 @@ describe('survivors', () => {
     const g = new Game(noGuards);
     g.survivors[0].state = 'aboard';
     g.survivors[1].state = 'aboard';
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 280, y: 790 };
     g.heli.vel = { x: 0, y: 40 };
     for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
@@ -655,7 +655,7 @@ describe('survivors', () => {
 
     const g2 = new Game(noGuards);
     g2.survivors[0].state = 'aboard';
-    g2.heli.landed = false;
+    g2.heli.landed = false; g2.onLaunchPad = false;
     g2.heli.pos = { x: 700, y: 600 };
     g2.heli.vel = { x: 0, y: 400 };
     for (let i = 0; i < 60 && g2.phase === 'playing'; i++) g2.update(idle, 1 / 60);
@@ -678,7 +678,7 @@ describe('level sanity', () => {
 describe('shield vs tether', () => {
   it('no shield while the orb is within tether reach, nor after leaving it until Space is pressed again', () => {
     const g = new Game(provingGround as LevelData);
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     const at = (y: number, input: Partial<FrameInput>) => {
       g.heli.pos = { x: g.orb.home.x, y };
       g.heli.vel = { x: 0, y: 0 };
@@ -699,7 +699,7 @@ describe('Space never switches abilities mid-press', () => {
   it('a press that starts as a shield stays a shield over a tank and near the orb', () => {
     const g = new Game(provingGround as LevelData);
     g.fuel = 50;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     const at = (x: number, y: number, input: Partial<FrameInput>) => {
       g.heli.pos = { x, y };
       g.heli.vel = { x: 0, y: 0 };
@@ -721,7 +721,7 @@ describe('guard helicopters', () => {
   // Proving Ground rescue pad (x 3020..3140, top 850) has 2 guards.
   const hoverAt = (g: Game, x: number, y: number, seconds: number, input: Partial<FrameInput> = {}) => {
     for (let i = 0; i < seconds * 60 && g.phase === 'playing'; i++) {
-      g.heli.landed = false;
+      g.heli.landed = false; g.onLaunchPad = false;
       g.heli.pos = { x, y };
       g.heli.vel = { x: 0, y: 0 };
       g.update({ ...idle, ...input }, 1 / 60);
@@ -743,7 +743,7 @@ describe('guard helicopters', () => {
     g.balloons = [];
     let sawCharge = false;
     for (let i = 0; i < 12 * 60 && g.phase === 'playing'; i++) {
-      g.heli.landed = false;
+      g.heli.landed = false; g.onLaunchPad = false;
       g.heli.pos = { x: 2950, y: 450 };
       g.heli.vel = { x: 0, y: 0 };
       g.update(idle, 1 / 60);
@@ -816,7 +816,7 @@ describe('balloons', () => {
     const start = { ...b.pos };
     let shots = 0;
     for (let i = 0; i < 8 * 60 && g.phase === 'playing'; i++) {
-      g.heli.landed = false;
+      g.heli.landed = false; g.onLaunchPad = false;
       g.heli.pos = { x: 1150, y: 500 };
       g.heli.vel = { x: 0, y: 0 };
       g.update({ ...idle, pickup: true, pickupPressed: i === 0 }, 1 / 60); // shield up so we survive
@@ -860,11 +860,105 @@ describe('no soft-locks', () => {
     const g = new Game(LEVELS[1]);
     g.orb.delivered = true;
     g.fuel = 0;
-    g.heli.landed = false;
+    g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: 860, y: 700 };
     g.heli.vel = { x: 0, y: 900 };
     for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
     expect(g.held).toBe(true);
     expect(g.fuel).toBeGreaterThanOrEqual(LEVELS[1].checkpoints![0].fuel! - 0.01);
+  });
+});
+
+describe('scoring', () => {
+  it('turret 100, balloon 200, guard 300 for player kills', () => {
+    const g = new Game(provingGround as LevelData);
+    const missileAt = (x: number, y: number) =>
+      g.projectiles.push({ kind: 'missile', pos: { x: x - 60, y }, vel: { x: 800, y: 0 }, life: 1, dir: { x: 1, y: 0 }, base: { x: 0, y: 0 }, speed: 800 });
+    g.heli.landed = false; g.onLaunchPad = false;
+    g.heli.pos = { x: 280, y: -900 }; // far out of everyone's way
+    const t = g.turrets[0];
+    missileAt(t.pos.x, t.pos.y - 11);
+    for (let i = 0; i < 10; i++) g.update(idle, 1 / 60);
+    expect(g.score).toBe(100);
+    const b = g.balloons[0];
+    g.balloons.forEach((x) => (x.t = 0));
+    missileAt(b.pos.x, b.pos.y);
+    for (let i = 0; i < 10; i++) g.update(idle, 1 / 60);
+    expect(g.score).toBe(300);
+    const e = g.enemies[0];
+    missileAt(e.pos.x, e.pos.y);
+    for (let i = 0; i < 10; i++) g.update(idle, 1 / 60);
+    expect(g.score).toBe(600);
+  });
+
+  it('500 per survivor rescued, and 10 per tenth of a second under the target time', () => {
+    const g = new Game(noGuards);
+    g.balloons = [];
+    g.turrets.forEach((t) => (t.alive = false));
+    g.survivors.forEach((s) => (s.state = 'aboard'));
+    g.orb.delivered = true;
+    g.heli.landed = false; g.onLaunchPad = false;
+    g.heli.pos = { x: 280, y: 790 };
+    g.heli.vel = { x: 0, y: 40 };
+    for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
+    expect(g.phase).toBe('complete');
+    const bonus = g.timeBonus;
+    expect(bonus).toBeGreaterThan(0);
+    const fuelAtLanding = g.fuel;
+    expect(g.score).toBe(2 * 500); // bonuses not paid yet: the tally pays them out
+    for (let i = 0; i < 12 * 60 && g.tally!.stage !== 'done'; i++) g.update(idle, 1 / 60);
+    expect(g.tally!.stage).toBe('done');
+    expect(g.bonusTime).toBe(0);
+    expect(g.fuel).toBe(0);
+    expect(g.timeBonus).toBe(bonus);
+    const fuelBonus = Math.floor((fuelAtLanding / cfg.fuelMax) * 24 + 1e-6) * 25;
+    expect(g.fuelBonus).toBe(fuelBonus);
+    expect(fuelBonus).toBeGreaterThan(0);
+    expect(g.score).toBe(2 * 500 + bonus + fuelBonus);
+  });
+});
+
+describe('extra lives', () => {
+  it('an extra life every 10,000 points', () => {
+    const g = new Game(provingGround as LevelData);
+    const l0 = g.lives;
+    g.award(9900, { x: 0, y: 0 });
+    expect(g.lives).toBe(l0);
+    g.award(100, { x: 0, y: 0 });
+    expect(g.lives).toBe(l0 + 1);
+    g.award(20000, { x: 0, y: 0 });
+    expect(g.lives).toBe(l0 + 3);
+  });
+});
+
+describe('bonus time', () => {
+  it('counts down only after lift-off, and stops at zero', () => {
+    const g = new Game(provingGround as LevelData);
+    const target = (provingGround as LevelData).targetTime!;
+    for (let i = 0; i < 120; i++) g.update(idle, 1 / 60); // sitting on the pad
+    expect(g.bonusTime).toBe(target);
+    for (let i = 0; i < 60; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
+    expect(g.bonusTime).toBeLessThan(target);
+    g.bonusTime = 0.1;
+    for (let i = 0; i < 60; i++) g.update(idle, 1 / 60);
+    expect(g.bonusTime).toBe(0);
+  });
+});
+
+describe('safe before launch', () => {
+  it('enemies hold fire and shots cannot hurt you until you lift off', () => {
+    const g = new Game(provingGround as LevelData);
+    // a turret right next to the pad, with clear sight
+    g.turrets[0].pos = { x: 600, y: 860 };
+    g.turrets[0].cooldown = 0;
+    for (let i = 0; i < 4 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.projectiles.filter((p) => p.kind === 'enemy').length).toBe(0);
+    g.projectiles.push({ kind: 'enemy', pos: { x: g.heli.pos.x + 80, y: g.heli.pos.y }, vel: { x: -300, y: 0 }, life: 2 });
+    for (let i = 0; i < 60; i++) g.update(idle, 1 / 60);
+    expect(g.phase).toBe('playing');
+    expect(g.onLaunchPad).toBe(true);
+    g.update({ ...idle, rotor: 1 }, 1 / 60);
+    for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
+    expect(g.onLaunchPad).toBe(false);
   });
 });

@@ -2,6 +2,7 @@
   "name": "DEEP CAVERNS",
   "width": 4400,
   "backdropY": 640,
+  "targetTime": 150,
   "startFuelMin": 70,
   "checkpoints": [{ "x": 3820, "y": 1996, "after": "delivery", "fuel": 45 }],
   "terrain": [
@@ -17,9 +18,6 @@
       700, 1150,
       720, 1450,
       1020, 1450,
-      1020, 1415,
-      1080, 1415,
-      1080, 1450,
       1300, 1450,
       1600, 1450,
       1650, 1400,

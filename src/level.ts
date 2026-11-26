@@ -36,6 +36,8 @@ export interface LevelData {
    *  `after: 'delivery'` applies once the orb is delivered. If a level has none, the game
    *  uses a point above the bowl. */
   checkpoints?: { x: number; y: number; after: 'delivery'; fuel?: number }[];
+  /** Target time in seconds: finishing under it earns POINTS.perTenthUnderTarget per tenth of a second. */
+  targetTime?: number;
   /** Minimum fuel when you respawn on the launch pad (before delivery). `checkpoints[].fuel` is the
    *  same for each checkpoint. Size these so the next stretch is always possible: no soft-locks. */
   startFuelMin?: number;
@@ -81,6 +83,8 @@ export interface Gate {
 export interface Level {
   data: LevelData;
   bowl: Bowl;
+  /** Pedestal the orb starts on (outline, solid). */
+  pedestal: Vec[];
   gates: Gate[];
   /** Deepest terrain y (for camera limits). */
   maxY: number;
@@ -149,6 +153,25 @@ export function buildLevel(data: LevelData): Level {
     return { pad, pts };
   });
 
+  // orb pedestal: a tapered plinth whose cradle top sits just under the orb's start; its foot is
+  // buried in the ground, so levels only place the orb, not the pedestal
+  const o = data.orb;
+  const top = o.y + 16.5;
+  const pedestal: Vec[] = [
+    { x: o.x - 22, y: top + 70 },
+    { x: o.x - 16, y: top + 10 },
+    { x: o.x - 24, y: top + 4 },
+    { x: o.x - 24, y: top },
+    { x: o.x - 8, y: top },
+    { x: o.x - 5, y: top + 3 },
+    { x: o.x + 5, y: top + 3 },
+    { x: o.x + 8, y: top },
+    { x: o.x + 24, y: top },
+    { x: o.x + 24, y: top + 4 },
+    { x: o.x + 16, y: top + 10 },
+    { x: o.x + 22, y: top + 70 },
+  ];
+  for (let i = 0; i < pedestal.length; i++) segments.push(seg(pedestal[i], pedestal[(i + 1) % pedestal.length], null));
   const bowl = buildBowl(data.bowl.x, data.bowl.y);
   for (let i = 0; i < bowl.pts.length; i++) segments.push(seg(bowl.pts[i], bowl.pts[(i + 1) % bowl.pts.length], null, true));
 
@@ -168,7 +191,7 @@ export function buildLevel(data: LevelData): Level {
   });
 
   const maxY = Math.max(...polygons.flat().map((p) => p.y));
-  return { data, bowl, gates, maxY, polygons, padPolygons, segments, startPad };
+  return { data, bowl, pedestal, gates, maxY, polygons, padPolygons, segments, startPad };
 }
 
 /** Put every gate back to its starting state. */

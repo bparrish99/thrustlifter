@@ -285,6 +285,27 @@ export class Sound {
       case 'rescued': // short happy run up
         [523.25, 659.25, 783.99, 880, 1046.5].forEach((f, i) => this.tone(t + i * 0.07, { type: 'triangle', f0: f, f1: f, dur: 0.5, gain: 0.13, attack: 0.005, lowpass: 2600 }));
         break;
+      case 'tallyTime': { // rapid rising blips as the clock drains
+        const f = 520 + (e.value ?? 0) * 900;
+        this.tone(t, { type: 'square', f0: f, f1: f * 1.02, dur: 0.045, gain: 0.05, attack: 0.002, lowpass: 3200 });
+        break;
+      }
+      case 'tallyFuel': { // a bright "ka-ching" per fuel tick, climbing the scale
+        const steps = [0, 2, 4, 5, 7, 9, 11, 12];
+        const n = (e.value ?? 1) - 1;
+        const f = 440 * Math.pow(2, (steps[n % 8] + 12 * Math.floor(n / 8)) / 12);
+        this.tone(t, { type: 'triangle', f0: f, f1: f, dur: 0.16, gain: 0.12, attack: 0.003, lowpass: 3500 });
+        this.tone(t + 0.03, { type: 'sine', f0: f * 2, f1: f * 2, dur: 0.2, gain: 0.06, attack: 0.003 });
+        break;
+      }
+      case 'tallyDone': // final chord
+        for (const f of [523.25, 659.25, 783.99, 1046.5]) this.tone(t, { type: 'triangle', f0: f, f1: f, dur: 1.4, gain: 0.08, attack: 0.01, lowpass: 2600 });
+        break;
+      case 'extraLife': // classic arcade 1-up arpeggio
+        [523.25, 659.25, 783.99, 1046.5, 1318.5, 1568].forEach((f, i) =>
+          this.tone(t + i * 0.06, { type: 'square', f0: f, f1: f, dur: i === 5 ? 0.5 : 0.1, gain: 0.07, attack: 0.004, lowpass: 3000 }),
+        );
+        break;
       case 'balloonPop': // pop! then a rubbery flap of falling scraps
         this.noiseHit(t, { dur: 0.12, type: 'highpass', f0: 1200, f1: 600, gain: 0.6 * v });
         this.tone(t, { type: 'sine', f0: 160, f1: 70, dur: 0.25, gain: 0.5 * v });
