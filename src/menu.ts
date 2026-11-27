@@ -221,7 +221,6 @@ export class Menu {
         'div',
         { class: 'menu-title-screen' },
         el('h1', { class: 'menu-logo' }, 'THRUSTLIFTER'),
-        el('div', { class: 'menu-tag' }, 'grab the orb · bring it home'),
         el('div', { class: 'menu-buttons' }, play, picker, controls),
         el('div', { class: 'menu-hint' }, firstGamepad() ? 'Gamepad connected' : 'Keyboard or gamepad'),
       ),
@@ -304,9 +303,8 @@ function injectStyles(): void {
   .menu button:hover, .menu button.focus { background: rgba(90,252,255,0.16); border-color: #5afcff; color: #fff;
     box-shadow: 0 0 14px rgba(90,252,255,0.35); outline: none; }
   .menu-title-screen { text-align: center; }
-  .menu-logo { margin: 0; font-size: clamp(40px, 9vw, 110px); letter-spacing: 6px; color: #ffd23f;
+  .menu-logo { margin: 0 0 48px; font-size: clamp(40px, 9vw, 110px); letter-spacing: 6px; color: #ffd23f;
     text-shadow: 0 0 18px rgba(255,210,63,0.75), 0 0 48px rgba(255,61,242,0.45); }
-  .menu-tag { margin: 6px 0 46px; color: #ff9cf7; letter-spacing: 3px; text-shadow: 0 0 10px rgba(255,61,242,0.6); }
   .menu-buttons { display: flex; flex-direction: column; gap: 14px; align-items: center; }
   .menu-buttons.row { flex-direction: row; justify-content: center; margin-top: 14px; }
   .menu button.big { min-width: 280px; font-size: 26px; font-weight: bold; padding: 12px 24px; letter-spacing: 4px; }

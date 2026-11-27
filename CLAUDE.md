@@ -31,6 +31,7 @@ terms of how the game plays, not implementation.
 - `src/physics.ts`: heli geometry, controls, integration, rigid rod constraint (pure, tested)
 - `src/game.ts`: game state and rules: collision, landing, pickup, delivery, weapons, particles. Fixed 240 Hz substeps.
 - `src/render.ts`: all drawing (faux-vector glow). No game logic.
+- `src/camera.ts`: the follow camera (framing, smoothing), kept pure so tests can fly it around
 - `src/input.ts`: keyboard + gamepad → `FrameInput`, using the remappable `src/bindings.ts` (actions, defaults, saved bindings, key/button names, `controlLabel` for hints)
 - `src/menu.ts`: front page (PLAY, starting-level picker, CONTROLS) and the Controls/remapping screen, an HTML overlay
 - `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates, tanks, balloons, survivors, checkpoints); play order in `src/levels/order.json` (index.ts globs the folder; files not in order.json are "shelved": kept and editable, not played). Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).

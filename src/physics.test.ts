@@ -566,14 +566,27 @@ describe('checkpoints (internal)', () => {
     expect(g.heli.pos.y).toBeGreaterThan(y0); // now gravity applies
   });
 
-  it('dying closest to the launch pad puts you back on it (before or after delivery)', () => {
-    for (const delivered of [false, true]) {
-      const g = new Game(threeCps());
-      g.orb.delivered = delivered;
-      crashAt(g, 600, 600);
-      expect(g.heli.landed).toBe(true);
-      expect(g.held).toBe(false);
-    }
+  it('dying closest to the launch pad puts you back on it before delivery', () => {
+    const g = new Game(threeCps());
+    crashAt(g, 600, 600);
+    expect(g.heli.landed).toBe(true);
+    expect(g.held).toBe(false);
+  });
+
+  it('after delivery you never respawn on the launch pad, even dying right next to it', () => {
+    // (else a hop and a landing would finish the mission)
+    const g = new Game(threeCps());
+    g.orb.delivered = true;
+    crashAt(g, 600, 600);
+    expect(g.heli.landed).toBe(false);
+    expect(g.held).toBe(true);
+    expect(g.heli.pos.x).toBeCloseTo(1300, 0); // the nearest checkpoint
+    // a level with no checkpoints: the stand-in one above the bowl
+    const bare = new Game({ ...(provingGround as LevelData), checkpoints: [] });
+    bare.orb.delivered = true;
+    crashAt(bare, 600, 600);
+    expect(bare.heli.landed).toBe(false);
+    expect(bare.heli.pos.x).toBeCloseTo(bare.level.bowl.cx, 0);
   });
 
   it('each respawn point tops you up to its own fuel minimum', () => {

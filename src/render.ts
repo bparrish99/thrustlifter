@@ -1,5 +1,6 @@
 import { config } from './config';
 import { minimapBounds, type MapBounds } from './minimap';
+import { stepCamera } from './camera';
 import { BALLOON_R, COLORS, FUEL_TICKS, POINTS, SHIELD_RADIUS, balloonGun, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, toWorldPoint, turretCentre, type Game } from './game';
 import type { Level } from './level';
 import { clamp, lerp, type Vec } from './math';
@@ -75,10 +76,13 @@ export class Renderer {
   private terrainAll: Path2D | null = null;
   private terrainEdge: Path2D | null = null;
   private rockPattern: CanvasPattern | null = null;
+  private cavePattern: CanvasPattern | null = null;
   private nebula: HTMLCanvasElement | null = null;
   private terrainFor: unknown = null;
   private cam = { x: 0, y: 0, init: false };
   private groundY: number | null = null;
+  private ceilY: number | null = null;
+  private aim: { x?: number; y?: number } = {};
   paused = false;
   private clock = 0;
   private frameDt = 0;
@@ -182,6 +186,7 @@ export class Renderer {
       this.terrainFor = game.level;
       this.cam.init = false;
       this.groundY = null;
+      this.ceilY = null;
     }
     const scale = this.viewScale;
     if (this.camOverride) {
@@ -273,54 +278,14 @@ export class Renderer {
   }
 
   private updateCamera(game: Game, dt: number, scale: number): void {
-    const h = game.heli;
-    let tx = h.pos.x + h.vel.x * config.camLookahead;
-    const vh = config.viewHeight;
-    const base = h.pos.y + h.vel.y * config.camLookahead;
-
-    // Ground under you: the HIGHEST of several probes across a strip, so crossing a gap
-    // (shaft mouth) or a cliff edge doesn't make the reading plunge; then eased over time.
-    let gy: number | null = null;
-    for (const dx of [-110, -55, 0, 55, 110]) {
-      const g = game.groundBelow({ x: h.pos.x + dx, y: h.pos.y });
-      if (g !== null && g > h.pos.y + 10 && (gy === null || g < gy)) gy = g;
-    }
-    if (gy !== null) gy = Math.min(gy, h.pos.y + vh * 0.7); // don't chase floors far below
-    if (gy !== null) {
-      this.groundY = this.groundY === null ? gy : this.groundY + (gy - this.groundY) * (1 - Math.exp(-2.5 * dt));
-    } else {
-      this.groundY = null;
-    }
-    const ceil = game.ceilingAbove(h.pos, vh);
-
-    // Frame: put the ground at camGround down the screen. In an enclosed space (floor and
-    // ceiling both in view), centre between them instead.
-    let ty = this.groundY === null ? base + vh * 0.2 : this.groundY - vh * (config.camGround - 0.5);
-    if (ceil !== null && this.groundY !== null && this.groundY - ceil < vh * 0.85) ty = (ceil + this.groundY) / 2;
-    if (game.orb.attached) {
-      tx = lerp(tx, game.orb.pos.x, 0.3);
-      ty = lerp(ty, game.orb.pos.y, 0.25);
-    }
-    // Keep the heli between 22% and 60% from the top (clear of the centre messages), and the faster you climb, the more
-    // room you get above you (so shafts don't hide what's coming).
-    const climb = clamp(-h.vel.y / 220, 0, 1);
-    ty = clamp(ty, base - vh * (0.1 + 0.15 * climb), base + vh * (0.28 - 0.38 * climb));
-    if (!game.alive) {
-      tx = this.cam.x;
-      ty = this.cam.y;
-    }
-    if (!this.cam.init || (game.time < 0.05 && game.phase === 'playing')) {
-      this.cam.x = tx;
-      this.cam.y = ty;
-      this.cam.init = true;
-    }
-    const k = 1 - Math.exp(-config.camFollow * dt);
-    this.cam.x += (tx - this.cam.x) * k;
-    this.cam.y += (ty - this.cam.y) * k;
-    const halfW = this.w / 2 / scale;
-    const W = game.level.data.width;
-    this.cam.x = halfW * 2 >= W ? W / 2 : clamp(this.cam.x, halfW, W - halfW);
-    this.cam.y = Math.min(this.cam.y, game.level.maxY - this.h / 2 / scale);
+    const st = { ...this.cam, groundY: this.groundY, ceilY: this.ceilY, aimX: this.aim.x, aimY: this.aim.y };
+    stepCamera(st, game, dt, this.w / 2 / scale, this.h / 2 / scale);
+    this.cam.x = st.x;
+    this.cam.y = st.y;
+    this.cam.init = st.init;
+    this.groundY = st.groundY;
+    this.ceilY = st.ceilY ?? null;
+    this.aim = { x: st.aimX, y: st.aimY };
   }
 
   // -------------------------------------------------------------- layers
@@ -428,20 +393,27 @@ export class Renderer {
     ctx.fillRect(-200, y0, W + 400, 300);
     ctx.fillStyle = 'rgb(3,2,8)';
     ctx.fillRect(-200, y0 + 300, W + 400, game.level.maxY);
-    // faint strata so the cave backdrop doesn't read as flat black
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(122,92,255,0.035)';
-    ctx.lineWidth = 2;
-    for (let y = y0 + 120; y < game.level.maxY; y += 46) {
-      ctx.beginPath();
-      for (let x = this.cam.x - 1400; x <= this.cam.x + 1400; x += 80) {
-        const yy = y + Math.sin(x * 0.004 + y) * 10;
-        x === this.cam.x - 1400 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
+    // the far cave wall: dark mottled stone with drips and cracks, drifting slower than the rock in
+    // front (parallax) so it reads as distant. Fades in with the backdrop over its first 300.
+    if (!this.cavePattern) this.cavePattern = ctx.createPattern(caveTexture(), 'repeat');
+    if (this.cavePattern) {
+      const k = 0.35; // how much the far wall moves with the camera, vs the foreground's 1
+      this.cavePattern.setTransform(new DOMMatrix().translate(this.cam.x * k, this.cam.y * k).scale(2));
+      ctx.save();
+      ctx.fillStyle = this.cavePattern;
+      // fade in as stacked layers, each reaching all the way down, so there are no seams between
+      // steps (side-by-side strips leave faint lines where their edges meet)
+      const bands = 16;
+      let prev = 0;
+      for (let i = 0; i < bands; i++) {
+        const t = (i + 1) / bands; // total opacity wanted from this step down
+        ctx.globalAlpha = 1 - (1 - t) / (1 - prev);
+        const top = y0 + (300 * i) / bands;
+        ctx.fillRect(-200, top, W + 400, game.level.maxY + 300 - top);
+        prev = t;
       }
-      ctx.stroke();
+      ctx.restore();
     }
-    ctx.restore();
   }
 
   private drawGates(game: Game): void {
@@ -1073,23 +1045,9 @@ export class Renderer {
     text(this.ctx, `${t.ticks} × ${POINTS.perFuelTick}`, this.w / 2 + 30, row, 52 * (fuelOn ? pulse : 1), t.ticks > 0 ? C.fuelPad : 'rgba(255,225,77,0.45)', 'left');
   }
 
-  /** A little hostage (the same stick figure as in the level, arm raised) for the rescued count. */
+  /** A little hostage (the same figure as in the level, standing, arms down) for the carried count. */
   private drawHostageIcon(x: number, y: number, k: number, alpha = 1): void {
-    const p = new Path2D();
-    const P = (px: number, py: number): [number, number] => [x + px * k, y + py * k];
-    const line = (a: [number, number], b: [number, number]) => {
-      p.moveTo(...a);
-      p.lineTo(...b);
-    };
-    line(P(0, -7), P(0, -15)); // body
-    const [hx, hy] = P(0, -18.5);
-    p.moveTo(hx + 2.6 * k, hy);
-    p.arc(hx, hy, 2.6 * k, 0, Math.PI * 2); // head
-    line(P(0, -7), P(-3, 0)); // legs
-    line(P(0, -7), P(3, 0));
-    line(P(0, -14), P(5, -21)); // arm up, waving for help
-    line(P(0, -14), P(-4, -9));
-    glow(this.ctx, p, COLORS.survivor, 1.2, 0.95 * alpha * config.glow);
+    drawPerson(this.ctx, x, y, k, 'idle', 1, 0, alpha, true);
   }
 
   /** A tiny helicopter silhouette for the lives display. */
@@ -1171,42 +1129,15 @@ export class Renderer {
     }
   }
 
-  /** Faux-vector stick figures: wave when you're near, run when called, scurry off the pad when home. */
+  /** Hostages: small solid figures (not stick men). Wave when you're near, run when called, scurry off the pad when home. */
   private drawSurvivors(game: Game): void {
     const ctx = this.ctx;
     const near = (x: number) => Math.abs(game.heli.pos.x - x) < 700 && game.alive;
-    const figure = (x: number, y: number, mode: 'idle' | 'wave' | 'run', dir: number, t: number, alpha = 1) => {
-      const p = new Path2D();
-      const hip = { x, y: y - 7 };
-      const neck = { x, y: y - 15 };
-      p.moveTo(hip.x, hip.y);
-      p.lineTo(neck.x, neck.y); // body
-      p.moveTo(x + 2.6, y - 18.5);
-      p.arc(x, y - 18.5, 2.6, 0, Math.PI * 2); // head
-      const swing = mode === 'run' ? Math.sin(t * 16) * 5 : 0;
-      p.moveTo(hip.x, hip.y);
-      p.lineTo(x - 3 + swing * 0.8, y); // legs
-      p.moveTo(hip.x, hip.y);
-      p.lineTo(x + 3 - swing * 0.8, y);
-      if (mode === 'wave') {
-        const a = -Math.PI / 2 + Math.sin(t * 9) * 0.6;
-        p.moveTo(neck.x, neck.y + 1);
-        p.lineTo(x + Math.cos(a) * 8, neck.y + 1 + Math.sin(a) * 8); // waving arm up
-        p.moveTo(neck.x, neck.y + 1);
-        p.lineTo(x - 4, y - 9);
-      } else {
-        p.moveTo(neck.x, neck.y + 1);
-        p.lineTo(x + dir * 5 - swing * 0.5, y - 10);
-        p.moveTo(neck.x, neck.y + 1);
-        p.lineTo(x - dir * 5 + swing * 0.5, y - 10);
-      }
-      glow(ctx, p, COLORS.survivor, 1.1, alpha * config.glow);
-    };
     for (const s of game.survivors) {
-      if (s.state === 'waiting') figure(s.pos.x, s.pos.y, near(s.pos.x) ? 'wave' : 'idle', s.dir, s.t);
-      else if (s.state === 'running') figure(s.pos.x, s.pos.y, 'run', s.dir, s.t);
+      if (s.state === 'waiting') drawPerson(ctx, s.pos.x, s.pos.y, 1, near(s.pos.x) ? 'wave' : 'idle', s.dir, s.t + s.pos.x * 0.37);
+      else if (s.state === 'running') drawPerson(ctx, s.pos.x, s.pos.y, 1, 'run', s.dir, s.t);
     }
-    for (const d of game.disembarking) if (d.t > 0) figure(d.pos.x, d.pos.y, 'run', -1, d.t, Math.max(0, 1 - d.t / 2.5));
+    for (const d of game.disembarking) if (d.t > 0) drawPerson(ctx, d.pos.x, d.pos.y, 1, 'run', -1, d.t, Math.max(0, 1 - d.t / 2.5));
   }
 
   private drawShield(game: Game): void {
@@ -1688,6 +1619,95 @@ function outlinePath(edges: [Vec, Vec][]): Path2D {
   return p;
 }
 
+/**
+ * A person, short and stocky (about 17 tall), standing with feet at (x, y): a solid silhouette (head, tapered torso,
+ * jointed arms and legs) with a soft glow, posed for idling, waving for help, or running. `dir` is
+ * the way they face (1 = right). `still` freezes the pose (HUD icon).
+ */
+/** Far-side arm and leg: a darker shade, so the figure has some depth. */
+const FAR_SURVIVOR = '#4f9a5c';
+
+function drawPerson(ctx: CanvasRenderingContext2D, x: number, y: number, k: number, mode: 'idle' | 'wave' | 'run', dir: number, t: number, alpha = 1, still = false): void {
+  // angles are measured from hanging straight down; positive swings toward the way they face
+  const seg = (from: { x: number; y: number }, ang: number, len: number) => ({ x: from.x + Math.sin(ang) * dir * len * k, y: from.y + Math.cos(ang) * len * k });
+  const run = mode === 'run';
+  const ph = still ? 0 : t * 15;
+  const lean = run ? 0.22 : 0;
+  const breathe = still || run ? 0 : Math.sin(t * 2.2) * 0.25;
+  const bob = run ? Math.abs(Math.sin(ph)) * 0.9 : 0;
+  const hip = { x, y: y - (7 + bob) * k };
+  const shoulder = { x: hip.x + Math.sin(lean) * dir * 6 * k, y: hip.y - (6 - breathe * 0.4) * k };
+  const head = { x: shoulder.x + Math.sin(lean) * dir * 3.4 * k, y: shoulder.y - 3.4 * k };
+  // legs: thigh swing and knee bend through a stride (left and right half a cycle apart)
+  const leg = (off: number) => {
+    const p = ph + off;
+    const thigh = run ? Math.sin(p) * 0.75 : off ? -0.16 : 0.16;
+    const knee = run ? thigh - (0.25 + Math.max(0, -Math.cos(p)) * 1.3) : thigh - 0.05;
+    // each leg hangs from its own side of the hips (off = 0: the near side)
+    const at = { x: hip.x + (off ? -1 : 1) * dir * (run ? 0.6 : 1.5) * k, y: hip.y };
+    const kn = seg(at, thigh, 3.7);
+    return [at, kn, seg(kn, knee, 3.5)] as const;
+  };
+  // arms swing opposite the legs when running; hang loosely when idle; one waves when you're near
+  // arms hang from the shoulder edges (from the middle they'd be hidden inside the stocky body)
+  const arm = (off: number, waving: boolean) => {
+    const side = off ? 1 : -1; // +1: the near side (the way they face)
+    const at = { x: shoulder.x + side * dir * (run ? 1 : 3) * k, y: shoulder.y + 0.6 * k };
+    if (waving) {
+      // elbow out, forearm up and clear of the head, waving
+      const up = seg(at, Math.PI / 2 + 0.15, 3.4);
+      return [at, up, seg(up, Math.PI - 0.35 + Math.sin(t * 9) * 0.35, 3.4)] as const;
+    }
+    const sw = run ? -Math.sin(ph + off) * 0.9 : side * (0.22 + breathe * 0.1);
+    const el = seg(at, sw, 3.4);
+    return [at, el, seg(el, sw + (run ? 1.4 : side * 0.08), 3.2)] as const;
+  };
+  const limbs = [leg(Math.PI), arm(0, false), leg(0), arm(Math.PI, mode === 'wave')];
+  const col = COLORS.survivor;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.globalCompositeOperation = 'source-over'; // solid, not additive: overlapping parts stay one colour
+  ctx.shadowColor = col;
+  ctx.shadowBlur = 3 * k * config.glow;
+  ctx.strokeStyle = col;
+  ctx.fillStyle = col;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  // far-side limbs dimmer, for a bit of depth
+  limbs.forEach(([a, b, c], i) => {
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = i < 2 ? FAR_SURVIVOR : col;
+    ctx.lineWidth = (i % 2 === 0 ? 3.4 : 2.7) * k;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.lineTo(c.x, c.y);
+    ctx.stroke();
+    if (i === 1) {
+      // torso (drawn between the far and near limbs): shoulders wider than hips
+      ctx.fillStyle = col;
+      const ux = shoulder.x - hip.x, uy = shoulder.y - hip.y;
+      const ul = Math.hypot(ux, uy) || 1;
+      const nx = -uy / ul, ny = ux / ul;
+      ctx.beginPath();
+      ctx.moveTo(hip.x + nx * 3.2 * k, hip.y + ny * 3.2 * k);
+      ctx.lineTo(shoulder.x + nx * 3.8 * k, shoulder.y + ny * 3.8 * k);
+      ctx.lineTo(shoulder.x - nx * 3.8 * k, shoulder.y - ny * 3.8 * k);
+      ctx.lineTo(hip.x - nx * 3.2 * k, hip.y - ny * 3.2 * k);
+      ctx.closePath();
+      ctx.fill();
+      ctx.lineWidth = 1.6 * k; // round off the torso's corners
+      ctx.strokeStyle = col;
+      ctx.stroke();
+      // head
+      ctx.beginPath();
+      ctx.ellipse(head.x, head.y, 2.7 * k, 2.8 * k, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  ctx.restore();
+}
+
 function glow(ctx: CanvasRenderingContext2D, path: Path2D, color: string | CanvasGradient, width: number, intensity = 1): void {
   if (intensity <= 0) return;
   ctx.save();
@@ -1796,6 +1816,77 @@ function nebulaTexture(): HTMLCanvasElement {
  * A tileable stone texture (built once): layered value noise for mottled rock, ridged noise for
  * lighter mineral veins, relief shading lit from the upper left, and fine grain/speckles.
  */
+/** The far wall behind caves: very dark, low-contrast stone with vertical drip streaks and faint cracks. */
+function caveTexture(): HTMLCanvasElement {
+  const N = 512;
+  let seed = 9001;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  /** Tiling value noise with gx x gy cells (different counts across and down stretch the features). */
+  const octave = (gx: number, gy: number) => {
+    const v = new Float32Array(gx * gy);
+    for (let i = 0; i < v.length; i++) v[i] = rnd();
+    return (x: number, y: number) => {
+      const fx = (x / N) * gx;
+      const fy = (y / N) * gy;
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const sx = (fx - x0) * (fx - x0) * (3 - 2 * (fx - x0));
+      const sy = (fy - y0) * (fy - y0) * (3 - 2 * (fy - y0));
+      const at = (i: number, j: number) => v[(((j % gy) + gy) % gy) * gx + (((i % gx) + gx) % gx)];
+      const a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx;
+      const b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx;
+      return a + (b - a) * sy;
+    };
+  };
+  const blotch = [octave(3, 3), octave(6, 6), octave(12, 12), octave(24, 24), octave(48, 48)];
+  const drip = [octave(8, 3), octave(16, 5)]; // narrower across than down: soft vertical seeping
+  const crack = [octave(5, 5), octave(10, 10)];
+  const H = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      let h = 0;
+      let amp = 0.5;
+      for (const o of blotch) {
+        h += o(x, y) * amp;
+        amp *= 0.5;
+      }
+      let d = 0;
+      let da = 0.5;
+      for (const o of drip) {
+        d += o(x, y) * da;
+        da *= 0.5;
+      }
+      H[y * N + x] = h * 0.9 + d * 0.25;
+    }
+  }
+  const c = document.createElement('canvas');
+  c.width = N;
+  c.height = N;
+  const g = c.getContext('2d')!;
+  const img = g.createImageData(N, N);
+  const at = (x: number, y: number) => H[((y + N) % N) * N + ((x + N) % N)];
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const i = y * N + x;
+      const h = at(x, y);
+      // light from above-left: a hint of relief so it reads as rough stone, not fog
+      const relief = 1 + (at(x - 2, y - 2) - at(x + 2, y + 2)) * 5;
+      // thin dark cracks where the crack noise crosses its midline
+      let cr = 0;
+      for (const o of crack) cr = Math.max(cr, 1 - Math.abs(o(x, y) * 2 - 1) * 28);
+      const dark = 1 - Math.max(0, cr) * 0.55;
+      const v = Math.max(0, h - 0.3) * relief * dark;
+      const grain = (rnd() - 0.5) * 3;
+      img.data[i * 4] = Math.max(0, Math.min(255, 4 + v * 34 + grain));
+      img.data[i * 4 + 1] = Math.max(0, Math.min(255, 3 + v * 26 + grain));
+      img.data[i * 4 + 2] = Math.max(0, Math.min(255, 9 + v * 62 + grain * 1.4));
+      img.data[i * 4 + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
 function rockTexture(): HTMLCanvasElement {
   const N = 512;
   let seed = 4242;

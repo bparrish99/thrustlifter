@@ -346,14 +346,21 @@ export class Sound {
         this.boom(t + 0.16, 0.6, 0.8);
         this.debris(t + 0.1, 8, 1);
         break;
-      case 'orbLost': // glassy shatter that rings out, over a muffled burst
-        for (const [f, d] of [[990, 1.6], [1320, 1.3], [1780, 1.1], [2470, 0.9], [3110, 0.7]] as const) {
-          this.tone(t, { type: 'sine', f0: f, f1: f * 0.985, dur: d, gain: 0.07 * v, attack: 0.002 });
-          this.tone(t + 0.01, { type: 'sine', f0: f * 1.004, f1: f * 0.99, dur: d * 0.9, gain: 0.05 * v, attack: 0.002 });
+      case 'orbLost': {
+        // crystal glass breaking: a sharp crack, a brief crunch, then a scatter of tiny high
+        // tinkles as the pieces fall and bounce, thinning out (no low boom: that read as a gong)
+        this.noiseHit(t, { dur: 0.07, type: 'highpass', f0: 1800, f1: 4200, gain: 0.55 * v, attack: 0.001 });
+        this.noiseHit(t + 0.005, { dur: 0.32, type: 'bandpass', f0: 3400, f1: 2600, q: 1.4, gain: 0.32 * v, attack: 0.002 });
+        for (let i = 0; i < 26; i++) {
+          const at = t + 0.01 + Math.pow(Math.random(), 1.7) * 0.85; // dense at first, sparser later
+          const f = 2300 + Math.random() * 2500;
+          const fade = 1 - (at - t) / 1.0;
+          const dur = 0.05 + Math.random() * 0.2;
+          this.tone(at, { type: 'sine', f0: f, f1: f * 0.992, dur, gain: (0.05 + Math.random() * 0.05) * fade * v, attack: 0.001 });
+          if (i % 3 === 0) this.tone(at, { type: 'triangle', f0: f * 1.5, f1: f * 1.49, dur: dur * 0.6, gain: 0.025 * fade * v, attack: 0.001 });
         }
-        this.noiseHit(t, { dur: 0.6, type: 'highpass', f0: 2500, f1: 3500, gain: 0.15 * v });
-        this.boom(t, 0.45, v);
         break;
+      }
       case 'tether': // "...up!" chirp to finish the beam's swoop, then a magnetic lock: thump, clank, hum
         this.tone(t, { type: 'sine', f0: 480, f1: 1100, dur: 0.14, gain: 0.3, attack: 0.01 });
         this.tone(t, { type: 'sine', f0: 120, f1: 65, dur: 0.3, gain: 0.6 });

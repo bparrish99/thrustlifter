@@ -285,6 +285,8 @@ export class Game {
 
   readonly levelNumber: number;
   readonly hasNextLevel: boolean;
+  /** The last level in the game (its mission-complete banner is the end-of-game one). */
+  readonly finalLevel: boolean;
   /** Lives remaining (including the current one). Carried from level to level. */
   lives = START_LIVES;
   /** Score (rules to be decided; carried from level to level). */
@@ -295,10 +297,11 @@ export class Game {
   /** First-level hints (null on other levels). Survives deaths and restarts, so each hint shows once per visit. */
   readonly tutorial: Tutorial | null;
 
-  constructor(data: LevelData, opts: { levelNumber?: number; hasNextLevel?: boolean; lives?: number; score?: number; tutorial?: boolean } = {}) {
+  constructor(data: LevelData, opts: { levelNumber?: number; hasNextLevel?: boolean; finalLevel?: boolean; lives?: number; score?: number; tutorial?: boolean } = {}) {
     this.levelNumber = opts.levelNumber ?? 1;
     this.tutorial = opts.tutorial ? new Tutorial() : null;
     this.hasNextLevel = opts.hasNextLevel ?? false;
+    this.finalLevel = opts.finalLevel ?? false;
     this.startLives = opts.lives ?? START_LIVES;
     this.startScore = opts.score ?? 0;
     this.level = buildLevel(data);
@@ -408,7 +411,9 @@ export class Game {
   respawnPoint(carryingOrb = false): { at: Vec | null; fuel: number } {
     const pad = this.level.startPad;
     const cands: { at: Vec | null; pos: Vec; fuel: number }[] = [
-      ...(carryingOrb ? [] : [{ at: null, pos: { x: pad.x + pad.w / 2, y: pad.y - 40 }, fuel: this.level.data.startFuelMin ?? this.cfg.fuelRespawnMin }]),
+      // never the launch pad while carrying the orb, or once it's delivered (otherwise dying right
+      // after delivery puts you back on the pad, and a hop and a landing finishes the mission)
+      ...(carryingOrb || this.orb.delivered ? [] : [{ at: null, pos: { x: pad.x + pad.w / 2, y: pad.y - 40 }, fuel: this.level.data.startFuelMin ?? this.cfg.fuelRespawnMin }]),
       ...this.checkpoints()
         // carrying: only checkpoints with room for the orb to hang below (if none have room, any will do)
         .filter((c, _, all) => !carryingOrb || !all.some((o) => this.orbHangRoom(o)) || this.orbHangRoom(c))
@@ -820,7 +825,12 @@ export class Game {
     this.ring(h.pos, 100, '#ffb020', 0.9);
     this.explode({ x: h.pos.x, y: h.pos.y - 30 }, 70, 260, '#3dff8a');
     this.events.push({ type: 'complete', pos: h.pos });
-    this.flash('MISSION COMPLETE', undefined, '#3dff8a', 1e9);
+    this.flash(this.completeBanner(), undefined, '#3dff8a', 1e9);
+  }
+
+  /** Just the banner, no summary line (owner's call). Placeholder joke text for beating the last level. */
+  private completeBanner(): string {
+    return this.finalLevel ? 'YOU IS WIN!!?!' : 'MISSION COMPLETE';
   }
 
   /** End-of-level tally: pay out each rescued hostage (slowly, one by one), then drain the time bonus, then the fuel gauge tick by tick, into the score. */
@@ -902,13 +912,8 @@ export class Game {
   }
 
   private finishTally(): void {
-    const d = this.deaths === 1 ? '1 death' : `${this.deaths} deaths`;
-    const next = this.hasNextLevel ? 'next level coming up' : 'all levels done  ·  R to play again';
-    const n = this.survivors.length;
-    const saved = this.survivors.filter((s) => s.state === 'rescued').length;
-    const rescue = n ? `  ·  rescued ${saved}/${n}` : '';
     this.events.push({ type: 'tallyDone' });
-    this.flash('MISSION COMPLETE', `score ${this.score}  ·  ${d}${rescue}  ·  ${next}`, '#3dff8a', 1e9);
+    this.flash(this.completeBanner(), undefined, '#3dff8a', 1e9);
   }
 
   private land(pad: PadData): void {

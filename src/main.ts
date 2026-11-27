@@ -18,7 +18,7 @@ const DEV = import.meta.env.DEV;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 let levelIndex = 0;
 const makeGame = (i: number, carry?: { lives: number; score: number }) =>
-  new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length, lives: carry?.lives, score: carry?.score, tutorial: i === 0 });
+  new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length, finalLevel: i + 1 === LEVELS.length, lives: carry?.lives, score: carry?.score, tutorial: i === 0 });
 let game = makeGame(levelIndex);
 const renderer = new Renderer(canvas);
 const input = new Input(window);
@@ -89,10 +89,14 @@ if (DEV && editor.resumeSaved()) {
 // ---------------------------------------------------------------- pause screen: Q (or gamepad Y) quits to the title
 
 let quitRequested = false;
+/** Esc on a mission-complete screen goes back to the title (whatever key pause is bound to). */
+let escRequested = false;
 addEventListener('keydown', (e) => {
   if (paused && !menu.open && e.code === 'KeyQ') quitRequested = true;
+  if (!menu.open && e.code === 'Escape') escRequested = true;
 });
 let prevY = false;
+let prevB = false;
 
 function drawPauseExtras(): void {
   renderer.withScreen((ctx, w, h) => {
@@ -149,9 +153,22 @@ function frame(now: number): void {
   }
   if (DEV && meta.toggleTuning && tuning) tuning._hidden ? tuning.show() : tuning.hide();
   if (editor.active) {
+    escRequested = false; // Esc belongs to the editor here
     editor.frame(dt);
     sound.update(editor.game, true);
     editor.game.events.length = 0;
+    requestAnimationFrame(frame);
+    return;
+  }
+  // mission complete (any level): Esc, the pause button, or gamepad B goes back to the title
+  const padNow = firstGamepad();
+  const bNow = !!padNow?.buttons[1]?.pressed;
+  const bHit = bNow && !prevB;
+  prevB = bNow;
+  const esc = escRequested;
+  escRequested = false;
+  if (game.phase === 'complete' && !testing && !paused && (esc || meta.pause || bHit)) {
+    quitToTitle();
     requestAnimationFrame(frame);
     return;
   }
