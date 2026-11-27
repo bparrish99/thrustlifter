@@ -41,8 +41,10 @@ terms of how the game plays, not implementation.
 - `src/audio.ts`: procedural rotor sound and event sound effects (game pushes `GameEvent`s; `main.ts` drains them each frame)
 
 ## Where things stand
-- Milestones and open questions: see `DESIGN.md`. Two levels exist (Proving Ground, Deep Caverns); the level editor (E in game) can make more.
-- Recently added: guard AI with nav-grid pathfinding (`navPath`, `steerGuard`, `attackPoint` in game.ts); turrets auto-align to any surface (`surfaceAt`).
-- Likely next: more levels via the editor, flying-enemy variety, upgrades (e.g. triple shot), polish from playtesting.
+- **Live** at tl.booze-elroy.com (Netlify, deploys from the `release` branch only; see Builds). Friends are playing it.
+- Five levels in play, all built by the owner in the editor: WELCOME TO THE JUGGLE (tutorial), GOING DOWN, UNWELCOME PARTY, TECHNIQUE, LAYUP (big bowl, lob the orb in). Proving Ground and Deep Caverns are shelved.
+- Recently added: front page + remappable controls; editor Join/Cut rock, Clear level, bowl size; overlapping rocks act as one; unbreakable-on-bowl orb; smoothed camera (`camera.ts`); no launch-pad respawn after delivery; solid stocky hostages; glass-break sound.
+- Open ideas mentioned but not done: auto-return to the title after the last level (players get no hint after YOU IS WIN); making big bowls soak up bounce if long lobs bounce out too often; gamepad B on mission complete and gamepad menu navigation/rebinding untested with a real pad.
+- Milestones and open questions: see `DESIGN.md`.
 
 Conventions: y points down; tilt > 0 = rotor tilted right; `window.game` is exposed for console poking and the screenshot script.
