@@ -8,7 +8,8 @@ import { bindings, lastDevice, type Action } from './bindings';
  * refuel / shield (tap while carrying to drop the orb), Esc/P pause, R restart, M mute.
  * Gamepad: left stick tilts (and dives when pushed down), RT thrust, LT dive, A tether, X fire,
  * B turn around, Start pause, Select (Back) restart.
- * Dev-only extras (fixed): T tuning panel, E level editor, N next level, 1-9 jump to a level.
+ * Dev-only extras (fixed): T tuning panel, E level editor, N next level, 1-9 jump to a level,
+ * F2 save state, F4 load state.
  */
 
 const DEADZONE = 0.18;
@@ -21,6 +22,9 @@ export interface MetaInput {
   nextLevel: boolean;
   /** 0-based level index from number keys 1-9, or -1. */
   jumpLevel: number;
+  /** Dev: snapshot the run (F2) / put it back (F4). */
+  saveState: boolean;
+  loadState: boolean;
 }
 
 export class Input {
@@ -38,6 +42,8 @@ export class Input {
       this.down.add(e.code);
       // keep bound keys (and arrows/space/tab) from scrolling the page or moving focus
       if (e.code.startsWith('Arrow') || e.code === 'Space' || e.code === 'Tab' || isBound(e.code)) e.preventDefault();
+      // dev save/load state keys: don't let the browser have them too (F4 opens the address bar)
+      if (import.meta.env.DEV && (e.code === 'F2' || e.code === 'F4')) e.preventDefault();
     });
     target.addEventListener('keyup', (e) => this.down.delete(e.code));
     target.addEventListener('blur', () => this.down.clear());
@@ -79,6 +85,8 @@ export class Input {
     const toggleTuning = this.p('KeyT', 'Backquote');
     const toggleEditor = this.p('KeyE');
     const nextLevel = this.p('KeyN');
+    const saveState = this.p('F2');
+    const loadState = this.p('F4');
     let jumpLevel = -1;
     for (let i = 1; i <= 9; i++) if (this.p(`Digit${i}`)) jumpLevel = i - 1;
 
@@ -112,7 +120,7 @@ export class Input {
     tiltAxis = Math.max(-1, Math.min(1, tiltAxis));
     return {
       game: { tiltAxis, rotor, dive, fire, flip, pickup, pickupPressed, restart },
-      meta: { pause, toggleTuning, toggleMute, toggleEditor, nextLevel, jumpLevel },
+      meta: { pause, toggleTuning, toggleMute, toggleEditor, nextLevel, jumpLevel, saveState, loadState },
     };
   }
 }

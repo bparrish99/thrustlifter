@@ -1215,6 +1215,22 @@ describe('after mission complete', () => {
     expect(g.deaths).toBe(0);
     expect(g.projectiles.filter((p) => p.kind === 'enemy').length).toBe(0);
   });
+
+  it('you cannot take off again while the bonuses count', () => {
+    const g = new Game(PROVING_GROUND);
+    g.orb.delivered = true;
+    g.heli.landed = false;
+    g.onLaunchPad = false;
+    g.heli.pos = { x: 280, y: 830 };
+    g.heli.vel = { x: 0, y: 20 };
+    for (let i = 0; i < 3 * 60 && g.phase !== 'complete'; i++) g.update(idle, 1 / 60);
+    expect(g.phase).toBe('complete');
+    const parked = { ...g.heli.pos };
+    const floor = { ...idle, rotor: 1, tiltAxis: 1 };
+    for (let i = 0; i < 5 * 60; i++) g.update(floor, 1 / 60);
+    expect(g.heli.landed).toBe(true);
+    expect(Math.hypot(g.heli.pos.x - parked.x, g.heli.pos.y - parked.y)).toBeLessThan(1);
+  });
 });
 
 describe('level progression', () => {
@@ -1319,5 +1335,54 @@ describe('turret mounting', () => {
     const pad = base.pads[0];
     const g = withTurret(pad.x + 40, pad.y);
     expect(g.turrets[0].normal.y).toBeLessThan(-0.99);
+  });
+});
+
+describe('dev save states', () => {
+  it('loading puts the whole run back: heli, fuel, lives, score, dead enemies', () => {
+    const g = new Game(PROVING_GROUND);
+    g.heli.landed = false;
+    g.onLaunchPad = false;
+    g.launched = true;
+    g.heli.pos = { x: 600, y: 300 };
+    g.heli.vel = { x: 40, y: -10 };
+    g.turrets[0].alive = false;
+    g.score = 1234;
+    g.fuel = 37;
+    const s = g.saveState();
+    const before = { pos: { ...g.heli.pos }, vel: { ...g.heli.vel }, lives: g.lives, time: g.time, enemies: g.enemies.length };
+    // fly into the ground until a life is lost, and let the dead turret "come back" (as if restarted)
+    for (let i = 0; i < 20 * 60 && g.deaths === 0; i++) g.update({ ...idle, dive: 1 }, 1 / 60);
+    expect(g.deaths).toBe(1);
+    g.turrets[0].alive = true;
+    expect(g.loadState(s)).toBe(true);
+    expect(g.heli.pos).toEqual(before.pos);
+    expect(g.heli.vel).toEqual(before.vel);
+    expect(g.lives).toBe(before.lives);
+    expect(g.deaths).toBe(0);
+    expect(g.phase).toBe('playing');
+    expect(g.score).toBe(1234);
+    expect(g.fuel).toBe(37);
+    expect(g.time).toBe(before.time);
+    expect(g.turrets[0].alive).toBe(false);
+    // and it can be loaded again: the saved copy wasn't touched by playing on
+    for (let i = 0; i < 60; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
+    g.loadState(s);
+    expect(g.heli.pos).toEqual(before.pos);
+  });
+
+  it('guard helis keep pointing at their own pads after a load', () => {
+    const g = new Game(DEEP_CAVERNS);
+    g.update(idle, 1 / 60);
+    expect(g.enemies.length).toBeGreaterThan(0);
+    const s = g.saveState();
+    g.loadState(s);
+    for (const e of g.enemies) expect(g.level.data.pads).toContain(e.pad);
+  });
+
+  it('a save from one level will not load into another', () => {
+    const a = new Game(PROVING_GROUND);
+    const b = new Game(DEEP_CAVERNS);
+    expect(b.loadState(a.saveState())).toBe(false);
   });
 });

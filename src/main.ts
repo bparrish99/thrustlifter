@@ -1,4 +1,4 @@
-import { Game } from './game';
+import { Game, type SaveState } from './game';
 import { Input, firstGamepad } from './input';
 import { LEVELS, LEVEL_FILES } from './levels';
 import { Editor } from './editor/editor';
@@ -25,8 +25,11 @@ const input = new Input(window);
 const sound = new Sound(window);
 const tuning = DEV ? createTuningPanel() : null;
 tuning?.hide();
+/** Dev: just loaded a save state; the game waits for a control before it runs. */
+let loadHold = false;
 const setGame = (g: Game) => {
   game = g;
+  loadHold = false;
   (window as unknown as { game: Game }).game = game;
 };
 
@@ -121,6 +124,10 @@ function drawPauseExtras(): void {
 // ---------------------------------------------------------------- main loop
 
 let last = performance.now();
+/** Dev save state (F2 saves, F4 loads; any number of times). Lives in memory: a page reload clears it. */
+let savedState: SaveState | null = null;
+/** Dev: small confirmation line at the top of the screen. */
+let devNote: { text: string; t: number } | null = null;
 let paused = false;
 
 function frame(now: number): void {
@@ -133,7 +140,17 @@ function frame(now: number): void {
       backdropLevel = menu.level;
       showBackdrop(menu.level);
     }
-    input.poll(); // keep key state fresh, but the game doesn't act on it
+    const { meta: m } = input.poll(); // keep key state fresh, but the game doesn't act on it
+    // dev tools work from the front page too: E edits the level picked there, T toggles tuning
+    if (DEV && m.toggleTuning && tuning) tuning._hidden ? tuning.show() : tuning.hide();
+    if (DEV && m.toggleEditor) {
+      levelIndex = menu.level;
+      menu.hide();
+      renderer.showHud = true;
+      editor.open(LEVELS[levelIndex], LEVEL_FILES[levelIndex] ?? null);
+      requestAnimationFrame(frame);
+      return;
+    }
     renderer.paused = false;
     renderer.render(game, dt);
     sound.update(game, true);
@@ -200,9 +217,29 @@ function frame(now: number): void {
     levelIndex = goTo;
     setGame(makeGame(levelIndex, carry));
   }
+  if (DEV && meta.saveState && game.alive) {
+    savedState = game.saveState();
+    devNote = { text: 'STATE SAVED', t: 1.2 };
+  }
+  if (DEV && meta.loadState) {
+    if (savedState && game.loadState(savedState)) {
+      paused = false;
+      renderer.snapCamera();
+      input.flush(); // keys held when you loaded don't carry into the restored moment
+      gi.rotor = gi.dive = gi.tiltAxis = 0;
+      loadHold = true;
+    } else devNote = { text: savedState ? 'SAVED STATE IS FROM ANOTHER LEVEL' : 'NO SAVED STATE (F2 TO SAVE)', t: 1.6 };
+  }
+  // after a load, everything stays frozen (momentum and all) until you touch a flight control
+  if (loadHold && (gi.restart || gi.rotor > 0 || gi.dive > 0 || gi.tiltAxis !== 0 || gi.fire || gi.flip || gi.pickup)) {
+    loadHold = false;
+    devNote = { text: 'STATE LOADED', t: 0.6 };
+  }
+  if (loadHold) devNote = { text: 'STATE LOADED  ·  FROZEN UNTIL YOU TOUCH A CONTROL', t: 1 };
+  const frozen = paused || loadHold;
   renderer.paused = paused;
-  if (!paused) game.update(gi, dt);
-  renderer.render(game, paused ? 0 : dt);
+  if (!frozen) game.update(gi, dt);
+  renderer.render(game, frozen ? 0 : dt);
   if (paused) drawPauseExtras();
   if (testing) {
     renderer.withScreen((ctx, w, h) => {
@@ -212,7 +249,19 @@ function frame(now: number): void {
       ctx.fillText('TEST FLIGHT  ·  E back to the editor  ·  R restart', w / 2, h - 30);
     });
   }
-  sound.update(game, paused);
+  if (devNote) {
+    const n = devNote;
+    n.t -= dt;
+    if (n.t <= 0) devNote = null;
+    else
+      renderer.withScreen((ctx, w) => {
+        ctx.font = 'bold 14px ui-monospace, Menlo, Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = `rgba(255,210,63,${Math.min(1, n.t * 2) * 0.9})`;
+        ctx.fillText(n.text, w / 2, 60);
+      });
+  }
+  sound.update(game, frozen);
   for (const e of game.events) sound.play(e, game.heli.pos);
   game.events.length = 0;
   requestAnimationFrame(frame);

@@ -277,6 +277,11 @@ export class Renderer {
     if (this.showHud) this.drawHud(game);
   }
 
+  /** Jump the camera straight to the heli next frame instead of easing there (after loading a save state). */
+  snapCamera(): void {
+    this.cam.init = false;
+  }
+
   private updateCamera(game: Game, dt: number, scale: number): void {
     const st = { ...this.cam, groundY: this.groundY, ceilY: this.ceilY, aimX: this.aim.x, aimY: this.aim.y };
     stepCamera(st, game, dt, this.w / 2 / scale, this.h / 2 / scale);

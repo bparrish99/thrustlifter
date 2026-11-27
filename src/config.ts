@@ -32,7 +32,7 @@ export const DEFAULTS = {
 
   // Fuel & shield. Thrust (and dive) and the shield burn fuel. Refuel by hovering over fuel
   // tanks holding Space; each survivor picked up adds a little. No refuel on death.
-  fuelMax: 100,
+  fuelMax: 150,
   fuelBurn: 3.1, // per second at full throttle (dive burns the same)
   shieldBurn: 12, // per second while the shield is up
   tankRate: 30, // fuel sucked per second from a tank

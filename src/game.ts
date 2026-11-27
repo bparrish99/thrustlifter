@@ -196,6 +196,15 @@ export const COLORS = {
   dust: '#7fd6ff',
 };
 
+/** Game fields a save state leaves alone (fixed for the level, or per-frame). */
+const SAVESTATE_SKIP = new Set(['cfg', 'level', 'tutorial', 'levelNumber', 'hasNextLevel', 'finalLevel', 'startLives', 'startScore', 'events']);
+export interface SaveState {
+  data: LevelData;
+  state: Record<string, unknown>;
+  padIdx: { enemies: number[]; posts: number[] };
+  gates: { open: boolean; fade: number; sealPending?: boolean }[];
+}
+
 export class Game {
   readonly cfg = config;
   level: Level;
@@ -306,6 +315,31 @@ export class Game {
     this.startScore = opts.score ?? 0;
     this.level = buildLevel(data);
     this.restart();
+  }
+
+  /**
+   * Dev save states: a deep copy of everything that changes during play (heli, orb, enemies, fuel,
+   * lives, score, timers...), restorable any number of times. Not the level geometry, tuning or
+   * tutorial. Only loads back into the same level.
+   */
+  saveState(): SaveState {
+    const o: Record<string, unknown> = {};
+    for (const k of Object.keys(this)) if (!SAVESTATE_SKIP.has(k)) o[k] = (this as unknown as Record<string, unknown>)[k];
+    const pads = this.level.data.pads;
+    return { data: this.level.data, state: structuredClone(o), padIdx: { enemies: this.enemies.map((e) => pads.indexOf(e.pad)), posts: this.posts.map((p) => pads.indexOf(p.pad)) }, gates: this.level.gates.map((g) => ({ open: g.open, fade: g.fade, sealPending: g.sealPending })) };
+  }
+
+  /** Restore a saveState(). Returns false (and does nothing) if it was saved on a different level. */
+  loadState(s: SaveState): boolean {
+    if (s.data !== this.level.data) return false;
+    Object.assign(this, structuredClone(s.state));
+    // keep pointing at the level's own pads, not copies of them
+    const pads = this.level.data.pads;
+    this.enemies.forEach((e, i) => (e.pad = pads[s.padIdx.enemies[i]] ?? e.pad));
+    this.posts.forEach((p, i) => (p.pad = pads[s.padIdx.posts[i]] ?? p.pad));
+    this.level.gates.forEach((g, i) => Object.assign(g, s.gates[i]));
+    this.events = [];
+    return true;
   }
 
   get alive(): boolean {
@@ -445,6 +479,8 @@ export class Game {
       this.restart();
       return;
     }
+    // mission complete: the heli is parked on the pad while the bonuses count; controls are dead
+    if (this.phase === 'complete') input = { ...input, tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false };
     if (input.flip && this.alive) this.heli.facing = this.heli.facing === 1 ? -1 : 1;
     if (input.pickupPressed && this.alive && this.orb.attached) {
       this.release();

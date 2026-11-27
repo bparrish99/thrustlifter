@@ -15,7 +15,7 @@ terms of how the game plays, not implementation.
 - Keep `DESIGN.md` current with every decision, including what was tried and rejected.
 
 ## Builds
-- Dev server: everything, including the editor (E), tuning (T), level jumps (1-9). `?play` skips the front page (screenshot scripts use it).
+- Dev server: everything, including the editor (E), tuning (T), level jumps (1-9), save states (F2 save, F4 load). `?play` skips the front page (screenshot scripts use it).
 - `npm run build` → `dist/`: the public build, **no editor/tuning/jumps** (gated on `import.meta.env.DEV`). The owner deploys it to Netlify (`netlify.toml`).
 - **Deploying:** Netlify (tl.booze-elroy.com) builds only the `release` branch, and each deploy costs the owner credits. Never push to `release` unless the owner says "deploy"; then `git push origin main:release`. Day-to-day pushes go to `main` only.
 
@@ -42,8 +42,8 @@ terms of how the game plays, not implementation.
 
 ## Where things stand
 - **Live** at tl.booze-elroy.com (Netlify, deploys from the `release` branch only; see Builds). Friends are playing it.
-- Five levels in play, all built by the owner in the editor: WELCOME TO THE JUGGLE (tutorial), GOING DOWN, UNWELCOME PARTY, TECHNIQUE, LAYUP (big bowl, lob the orb in). Proving Ground and Deep Caverns are shelved.
-- Recently added: front page + remappable controls; editor Join/Cut rock, Clear level, bowl size; overlapping rocks act as one; unbreakable-on-bowl orb; smoothed camera (`camera.ts`); no launch-pad respawn after delivery; solid stocky hostages; glass-break sound.
+- Six levels in play, all built by the owner in the editor: WELCOME TO THE JUGGLE (tutorial), GOING DOWN, UNWELCOME PARTY, TECHNIQUE, LAYUP (big bowl, lob the orb in), PRICKLY. Proving Ground and Deep Caverns are shelved.
+- Recently added: dev save states (F2/F4); controls locked during the mission-complete tally; fuel tank 150; front page + remappable controls; editor Join/Cut rock, Clear level, bowl size; overlapping rocks act as one; unbreakable-on-bowl orb; smoothed camera (`camera.ts`); no launch-pad respawn after delivery; solid stocky hostages; glass-break sound.
 - Open ideas mentioned but not done: auto-return to the title after the last level (players get no hint after YOU IS WIN); making big bowls soak up bounce if long lobs bounce out too often; gamepad B on mission complete and gamepad menu navigation/rebinding untested with a real pad.
 - Milestones and open questions: see `DESIGN.md`.
 
