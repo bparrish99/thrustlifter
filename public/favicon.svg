@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="6" fill="#0a0620"/>
+  <g fill="none" stroke="#ffd23f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- main rotor -->
+    <path d="M4 7.5 H28" stroke="#e8f6ff"/>
+    <path d="M17 7.5 V11"/>
+    <!-- tail boom and fin -->
+    <path d="M12 15 L3.5 13.5 L2.5 10 M4 14 L3 17"/>
+    <!-- fuselage -->
+    <path d="M11 13 Q12 11 16 11 H21 Q27 11.5 28 16.5 Q27.5 20 23 20 H13 Q10.5 20 11 13 Z" fill="#3c2c08"/>
+    <!-- skids -->
+    <path d="M14 20 V23.5 M23 20 V23.5 M10.5 23.5 H27.5"/>
+  </g>
+  <!-- canopy glass -->
+  <path d="M21.5 12.6 Q25.8 13.2 26.6 16.2 H21.5 Z" fill="#7ffcff"/>
+</svg>

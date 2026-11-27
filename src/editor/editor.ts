@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { Game } from '../game';
 import type { LevelData, PadData } from '../level';
+import { BOWL_MAX_SIZE, BOWL_MIN_SIZE, bowlSize } from '../level';
 import { closestPointSegment, distPointSegment, type Vec } from '../math';
 import type { Renderer } from '../render';
 import { ALL_LEVEL_FILES, LEVEL_FILES, SHELVED_LEVEL_FILES, levelFile } from '../levels';
@@ -13,6 +14,8 @@ import {
   padHostages,
   cutRock,
   cutsThroughRock,
+  joinFill,
+  bridgesAir,
   outlinePos,
   slugFile,
   snapToGround,
@@ -27,12 +30,13 @@ import {
  * into src/levels (dev server only). The session (draft, camera, file) survives page reloads.
  */
 
-type Tool = 'select' | 'rock' | 'cut' | 'pad' | 'rescue' | 'orb' | 'bowl' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint';
+type Tool = 'select' | 'rock' | 'cut' | 'join' | 'pad' | 'rescue' | 'orb' | 'bowl' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint';
 
 const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
   { id: 'select', key: '1', label: 'Select', hint: 'Click to select, drag to move. Shift+click a rock edge to add a point (drag to place it). Del removes.' },
   { id: 'rock', key: '2', label: 'Rock', hint: 'Click to place points of a new rock shape. Click the first point (or Enter) to close it.' },
   { id: 'cut', key: 'x', label: 'Cut rock', hint: 'Click a rock edge, then the edge across the rock: carves a passage through it (splitting the rock). Esc cancels.' },
+  { id: 'join', key: 'j', label: 'Join rock', hint: 'Click a rock edge, then the edge across the gap: fills the gap with solid rock (the opposite of Cut). Esc cancels.' },
   { id: 'pad', key: '3', label: 'Launch pad', hint: 'Click the ground to move your launch/return pad there.' },
   { id: 'rescue', key: '4', label: 'Rescue pad', hint: 'Click the ground to add a rescue pad (1 guard and 2 hostages; set the guard count in its properties).' },
   { id: 'orb', key: '5', label: 'Orb', hint: 'Click the ground to move the orb (its pedestal stands there).' },
@@ -92,6 +96,10 @@ export class Editor {
   private cutStart: { poly: number; at: Vec; s: number } | null = null;
   /** Cut tool: how wide a passage to carve. */
   private cutWidth = 160;
+  /** Join tool: the first point clicked on a rock edge, waiting for the one across the gap. */
+  private joinStart: { poly: number; at: Vec; s: number } | null = null;
+  /** Join tool: how far along each wall the new rock reaches. */
+  private joinWidth = 200;
   private keys = new Set<string>();
   private undo: string[] = [];
   private redo: string[] = [];
@@ -180,6 +188,16 @@ export class Editor {
     localStorage.removeItem(SESSION_KEY + '.active');
   }
 
+  /** Exit the editor, asking first if that would throw away changes that aren't saved. */
+  requestExit(): void {
+    if (this.unsaved) {
+      const errors = this.problems.filter((p) => p.level === 'error');
+      const why = errors.length ? ` It can't be saved yet: ${errors[0].text}` : '';
+      if (!confirm(`${this.draft.name.trim() || 'This level'} has unsaved changes.${why}\n\nLeave the editor anyway and lose them?`)) return;
+    }
+    this.onExit?.();
+  }
+
   get data(): LevelData {
     return this.draft;
   }
@@ -223,7 +241,11 @@ export class Editor {
 
   private rebuildGame(): void {
     try {
-      this.game = new Game(this.draft, { levelNumber: 0 });
+      // a level with no launch pad yet (e.g. a cleared canvas) is still drawn: the preview gets a
+      // stand-in pad far out of sight, so you see what you've built so far
+      const hasStart = this.draft.pads.some((p) => p.kind === 'start');
+      const preview = hasStart ? this.draft : { ...this.draft, pads: [...this.draft.pads, { x: -1e6, y: 0, w: 160, kind: 'start' as const }] };
+      this.game = new Game(preview, { levelNumber: 0 });
       this.game.message = null;
       // one tiny step so guards appear parked on their pads
       this.game.update({ tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false, restart: false }, 1 / 120);
@@ -385,6 +407,34 @@ export class Editor {
           handle(ctx, a, px, '#ff8a3d', 6);
         }
       }
+      // Join tool: the rock it would add (green across a gap, red if it wouldn't work there)
+      if (this.tool === 'join') {
+        const edge = this.edgeNear(this.mouse, 16);
+        if (edge) handle(ctx, edge.at, px, '#3dff8a', 5);
+        if (this.joinStart) {
+          const a = this.joinStart.at;
+          const fill = edge ? this.joinPreview(edge) : null;
+          ctx.lineWidth = 1.5 * px;
+          if (fill) {
+            ctx.fillStyle = 'rgba(61,255,138,0.25)';
+            ctx.strokeStyle = '#3dff8a';
+            ctx.beginPath();
+            for (let k = 0; k < fill.length; k += 2) (k ? ctx.lineTo(fill[k], fill[k + 1]) : ctx.moveTo(fill[k], fill[k + 1]));
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          } else {
+            ctx.strokeStyle = '#ff5a5a';
+            ctx.setLineDash([8 * px, 6 * px]);
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(this.mouse.x, this.mouse.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          handle(ctx, a, px, '#3dff8a', 6);
+        }
+      }
       if (this.shiftDown && !this.drag && this.tool !== 'rock' && this.tool !== 'gate' && this.hit(this.mouse)?.kind !== 'vert') {
         const edge = this.edgeNear(this.mouse, 16);
         if (edge) {
@@ -498,7 +548,7 @@ export class Editor {
       case 'orb':
         return box(d.orb.x - 24, d.orb.y - 16, 48, 16 + 16.5 + ORB_PEDESTAL_HEIGHT);
       case 'bowl':
-        return box(d.bowl.x - 40, d.bowl.y - 34, 80, 34);
+        return box(d.bowl.x - 40 * bowlSize(d.bowl), d.bowl.y - 34 * bowlSize(d.bowl), 80 * bowlSize(d.bowl), 34 * bowlSize(d.bowl));
       case 'checkpoint': {
         const c = d.checkpoints![s.i];
         return box(c.x - 40, c.y - 40, 80, 80);
@@ -606,6 +656,8 @@ export class Editor {
         return;
       case 'cut':
         return this.cutClick(m);
+      case 'join':
+        return this.joinClick(m);
     }
 
     // placement tools
@@ -642,7 +694,7 @@ export class Editor {
         });
       case 'bowl':
         return onGround((gy) => {
-          d.bowl = { x: sp.x, y: gy };
+          d.bowl = { ...d.bowl, x: sp.x, y: gy };
           this.sel = { kind: 'bowl' };
         });
       case 'tank':
@@ -757,7 +809,7 @@ export class Editor {
       }
       case 'bowl': {
         const g = ground();
-        if (g !== null) d.bowl = { x: sp.x, y: g };
+        if (g !== null) d.bowl = { ...d.bowl, x: sp.x, y: g };
         break;
       }
     }
@@ -815,6 +867,37 @@ export class Editor {
     this.sel = null;
     this.changed();
     this.flash('Cut! Drag the points to shape the passage (Ctrl+Z undoes).');
+  }
+
+  /** The rock the Join tool would add between joinStart and this edge point, or null if it can't. */
+  private joinPreview(edge: { poly: number; j: number; at: Vec }): number[] | null {
+    const st = this.joinStart;
+    if (!st || !bridgesAir(this.draft, st.at, edge.at)) return null;
+    const poly = this.draft.terrain[edge.poly];
+    const n = poly.length / 2;
+    const s = outlinePos(poly, (edge.j - 1 + n) % n, edge.at);
+    return joinFill(this.draft.terrain[st.poly], st.s, poly, s, this.joinWidth);
+  }
+
+  /** Join tool: first click picks one wall, second click (across the gap) fills it with rock. */
+  private joinClick(m: Vec): void {
+    const edge = this.edgeNear(m, 16);
+    if (!edge) return this.flash('Click on the edge of a rock.');
+    if (!this.joinStart) {
+      const poly = this.draft.terrain[edge.poly];
+      const n = poly.length / 2;
+      this.joinStart = { poly: edge.poly, at: edge.at, s: outlinePos(poly, (edge.j - 1 + n) % n, edge.at) };
+      return this.flash('Now click the rock edge across the gap.');
+    }
+    if (!bridgesAir(this.draft, this.joinStart.at, edge.at)) return this.flash('Pick a point across open air: the gap to fill is between the two clicks.');
+    const fill = this.joinPreview(edge);
+    if (!fill) return this.flash('That wall is too short for this width: narrow it in the panel.');
+    this.snapshot();
+    this.draft.terrain.push(fill);
+    this.joinStart = null;
+    this.sel = null;
+    this.changed();
+    this.flash('Joined! The new rock is its own shape: drag its points to tidy it (Ctrl+Z undoes).');
   }
 
   private onDoubleClick(e: MouseEvent): void {
@@ -905,10 +988,11 @@ export class Editor {
         if (this.rockPts.length >= 3) return this.finishRock();
         return this.test();
       case 'Escape':
-        if (this.rockPts.length || this.gateStart || this.cutStart) {
+        if (this.rockPts.length || this.gateStart || this.cutStart || this.joinStart) {
           this.rockPts = [];
           this.gateStart = null;
           this.cutStart = null;
+          this.joinStart = null;
           return;
         }
         this.sel = null;
@@ -933,6 +1017,7 @@ export class Editor {
     this.rockPts = [];
     this.gateStart = null;
     this.cutStart = null;
+    this.joinStart = null;
     this.buildToolbar();
     this.buildPanel();
   }
@@ -1134,6 +1219,18 @@ export class Editor {
     return `${where} · ${this.draft.name}`;
   }
 
+  /** Wipe this level to a blank canvas: no rock, no objects (the orb and bowl stay, as every level
+   *  needs exactly one of each; click them back onto the ground with their tools). */
+  private clearLevel(): void {
+    if (!confirm(`Clear everything in ${this.draft.name}? All rock and objects go; only the orb and bowl stay, to put back on the ground once you've drawn some.\n\nUndo brings it all back; nothing changes on disk until you save.`)) return;
+    this.snapshot();
+    const d = this.draft;
+    this.draft = { name: d.name, width: d.width, targetTime: d.targetTime, startFuelMin: d.startFuelMin, terrain: [], pads: [], orb: d.orb, bowl: d.bowl, turrets: [] };
+    this.sel = null;
+    this.changed();
+    this.flash('Blank canvas. Undo (Ctrl+Z) brings it back.');
+  }
+
   private newLevel(): void {
     this.snapshot();
     this.draft = newLevelTemplate();
@@ -1211,6 +1308,11 @@ export class Editor {
 
     kids.push(
       el('div', { class: 'ed-now' }, this.levelTitle(), this.unsaved ? el('span', { class: 'ed-dirty' }, ' ● unsaved') : ''),
+      ...(() => {
+        // errors block saving: say so right here, and keep saying it until they're fixed
+        const errors = this.problems.filter((p) => p.level === 'error');
+        return errors.length ? [el('div', { class: 'ed-blocked' }, `✖ CAN'T SAVE until fixed:`, ...errors.map((p) => el('div', {}, '· ' + p.text)))] : [];
+      })(),
       el(
         'div',
         { class: 'ed-actions' },
@@ -1237,6 +1339,7 @@ export class Editor {
           }
         }),
         button('✚ New level', () => this.newLevel()),
+        button('🧹 Clear level', () => this.clearLevel()),
         button('⛶ Frame all  [F]', () => this.frameAll()),
         button(`${this.grid ? '☑' : '☐'} Grid snap  [G]`, () => {
           this.grid = !this.grid;
@@ -1246,7 +1349,7 @@ export class Editor {
           this.showTight = !this.showTight;
           this.buildPanel();
         }),
-        button('✕ Exit editor  [E]', () => this.onExit?.()),
+        button('✕ Exit editor  [E]', () => this.requestExit()),
       ),
     );
 
@@ -1269,6 +1372,17 @@ export class Editor {
       kids.push(el('div', { class: 'ed-note' }, 'Click a rock edge, then the edge across the rock. The heli needs about 95; carrying the orb through a tunnel needs about 200 of height.'));
     }
 
+    if (this.tool === 'join') {
+      section('JOIN ROCK');
+      const input = el('input', { type: 'number', step: '10', value: String(this.joinWidth) }) as HTMLInputElement;
+      input.onchange = () => {
+        const v = parseFloat(input.value);
+        if (Number.isFinite(v)) this.joinWidth = Math.max(40, Math.min(2000, v));
+      };
+      kids.push(el('label', {}, 'Fill width', input));
+      kids.push(el('div', { class: 'ed-note' }, 'Click a rock edge, then the edge across the gap. The new rock hugs each wall for this distance, centred on your clicks. To close a long crack, click near the middle of each side with a big width, or join it in a few bites.'));
+    }
+
     const s = this.sel;
     if (s) {
       section(`SELECTED · ${selName(s)}`);
@@ -1283,6 +1397,15 @@ export class Editor {
             });
             if ((p.guards ?? 0) > 0) check('Guards wake only after delivery', () => p.guardsAfter === 'delivery', (v) => (p.guardsAfter = v ? 'delivery' : undefined));
           }
+          break;
+        }
+        case 'bowl': {
+          num(`Size (${BOWL_MIN_SIZE}–${BOWL_MAX_SIZE}×)`, () => bowlSize(d.bowl), (v) => {
+            const sz = Math.round(Math.min(BOWL_MAX_SIZE, Math.max(BOWL_MIN_SIZE, v)) * 4) / 4;
+            if (sz === 1) delete d.bowl.size;
+            else d.bowl.size = sz;
+          }, 0.25);
+          kids.push(el('div', { class: 'ed-note' }, 'Bigger bowl = easier to drop or lob the orb into. It still breaks if it lands too hard.'));
           break;
         }
         case 'balloon': {
@@ -1483,6 +1606,8 @@ function injectStyles(): void {
   .ed-problem.error { color: #ff6a6a; }
   .ed-problem.warn { color: #ffcf66; }
   .ed-now { font-size: 15px; font-weight: bold; color: #5afcff; margin: 0 0 8px; line-height: 1.3; }
+  .ed-blocked { margin: 4px 0 6px; padding: 6px 8px; color: #ff6a6a; border: 1px solid rgba(255,106,106,0.6); background: rgba(255,60,60,0.1); font-weight: bold; line-height: 1.4; }
+  .ed-blocked div { font-weight: normal; }
   .ed-dirty { color: #ffcf66; font-size: 12px; }
   .ed-lvrow { display: flex; gap: 3px; margin: 3px 0; }
   .ed-lvrow .ed-lvname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -17,6 +17,7 @@ terms of how the game plays, not implementation.
 ## Builds
 - Dev server: everything, including the editor (E), tuning (T), level jumps (1-9). `?play` skips the front page (screenshot scripts use it).
 - `npm run build` → `dist/`: the public build, **no editor/tuning/jumps** (gated on `import.meta.env.DEV`). The owner deploys it to Netlify (`netlify.toml`).
+- **Deploying:** Netlify (tl.booze-elroy.com) builds only the `release` branch, and each deploy costs the owner credits. Never push to `release` unless the owner says "deploy"; then `git push origin main:release`. Day-to-day pushes go to `main` only.
 
 ## Commands
 - `npm run dev`: play at http://localhost:5173

@@ -1,5 +1,6 @@
 import type { Config } from '../config';
 import type { LevelData } from '../level';
+import { BOWL_HALF_W, BOWL_RIM_H, bowlSize } from '../level';
 import { SURVIVOR_CALL_RANGE, TANK_H, TANK_REACH_X } from '../game';
 import { distPointSegment, segmentIntersectionT, type Vec } from '../math';
 import { ANCHOR } from '../physics';
@@ -126,7 +127,13 @@ export function validate(d: LevelData, cfg: Config): Problem[] {
   const g = groundBelow(d, d.orb, 400);
   if (g === null || Math.abs(g - (d.orb.y + 16.5 + ORB_PEDESTAL_HEIGHT)) > 20)
     out.push({ level: 'warn', text: 'The orb pedestal isn’t standing on the ground (drag the orb to re-seat it).', at: d.orb });
-  if (insideRock(d, { x: d.bowl.x, y: d.bowl.y - 40 })) out.push({ level: 'error', text: 'The bowl is buried in rock.', at: d.bowl });
+  {
+    const k = bowlSize(d.bowl);
+    const rimY = d.bowl.y - BOWL_RIM_H * k - 6;
+    if (insideRock(d, { x: d.bowl.x, y: rimY })) out.push({ level: 'error', text: 'The bowl is buried in rock.', at: d.bowl });
+    else if ([-1, 1].some((side) => insideRock(d, { x: d.bowl.x + side * BOWL_HALF_W * k, y: rimY })))
+      out.push({ level: 'warn', text: 'The bowl pokes into rock at one end (too big for that spot?).', at: d.bowl });
+  }
   for (const p of d.pads) {
     if (insideRock(d, { x: p.x + p.w / 2, y: p.y - 30 })) out.push({ level: 'error', text: 'A pad is buried in rock.', at: { x: p.x + p.w / 2, y: p.y } });
   }
@@ -311,6 +318,54 @@ export function cutRock(poly: number[], sa: number, sb: number, width: number): 
   const b = chain(sb + half, sa - half);
   if (a.length < 6 || b.length < 6) return null;
   return [a, b];
+}
+
+/** The stretch of outline from s0 forward to s1, as points (both ends included). */
+function outlineChain(o: ReturnType<typeof outline>, s0: number, s1: number): Vec[] {
+  const fwd = (a: number, b: number) => (((b - a) % o.total) + o.total) % o.total;
+  const L = fwd(s0, s1);
+  const mid = o.pts
+    .map((p, k) => ({ p, d: fwd(s0, o.cum[k]) }))
+    .filter((v) => v.d > 0.5 && v.d < L - 0.5)
+    .sort((a, b) => a.d - b.d)
+    .map((v) => v.p);
+  return [outlinePoint(o, s0), ...mid, outlinePoint(o, s1)];
+}
+
+/**
+ * Join tool: fill the open gap between two rock walls with solid rock. The new rock follows each
+ * wall for `width` along its outline (centred on the clicked point) and spans the gap between, so
+ * it sits flush against both walls; the game treats overlapping rock as one piece and hides the
+ * seams. The walls can be on the same rock (closing a crack) or two different rocks.
+ * Returns the new rock's outline, or null if a wall is too short for that width.
+ */
+export function joinFill(polyA: number[], sA: number, polyB: number[], sB: number, width: number): number[] | null {
+  const oa = outline(polyA);
+  const ob = outline(polyB);
+  const h = width / 2;
+  if (oa.total < width + 20 || ob.total < width + 20) return null;
+  const a = outlineChain(oa, sA - h, sA + h);
+  let b = outlineChain(ob, sB - h, sB + h);
+  // facing walls usually run in opposite directions; if not (rocks drawn with opposite winding),
+  // flip one so the filler's two crossing sides don't make a bow-tie
+  if (segmentIntersectionT(a[a.length - 1], b[0], b[b.length - 1], a[0]) !== null) b = b.reverse();
+  return [...a, ...b].flatMap((p) => [Math.round(p.x), Math.round(p.y)]);
+}
+
+/** Does the straight line between two points cross open air (so joining across it makes sense)? */
+export function bridgesAir(d: LevelData, a: Vec, b: Vec): boolean {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (len < 10) return false;
+  const n = Math.max(2, Math.ceil(len / 10));
+  let air = 0;
+  let total = 0;
+  for (let k = 1; k < n; k++) {
+    const t = k / n;
+    if (t * len < 8 || (1 - t) * len < 8) continue;
+    total++;
+    if (!insideRock(d, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) air++;
+  }
+  return total > 0 && air / total > 0.8;
 }
 
 /** Does the straight line between two points run entirely through rock (so cutting along it makes sense)? */

@@ -205,12 +205,60 @@ describe('orb bowl, release and return to base', () => {
     expect(g.orb.delivered).toBe(true);
   });
 
-  it('a drop from too high shatters the orb, but the pilot lives and a new orb appears', () => {
+  it('a bigger bowl catches a drop that would miss the standard one', () => {
+    const big = { ...(provingGround as LevelData), bowl: { ...(provingGround as LevelData).bowl, size: 3 } };
+    const std = new Game(provingGround as LevelData).level.bowl;
+    const lvl = new Game(big).level.bowl;
+    expect(lvl.innerR).toBeCloseTo(std.innerR * 3);
+    expect(lvl.halfW).toBeCloseTo(std.halfW * 3);
+    expect(lvl.pts.at(-1)!.y - lvl.rimY).toBeGreaterThan(std.pts.at(-1)!.y - std.rimY); // taller
+
+    const drop = (data: LevelData) => {
+      const g = new Game(data);
+      g.heli.landed = false; g.onLaunchPad = false;
+      g.heli.pos = { x: g.level.bowl.cx, y: -600 };
+      g.orb.free = true;
+      g.orb.pos = { x: g.level.bowl.cx + 60, y: g.level.bowl.rimY - 40 };
+      g.orb.vel = { x: 0, y: 0 };
+      run(g, 4);
+      return g;
+    };
+    expect(drop(provingGround as LevelData).orb.delivered).toBe(false); // misses the standard bowl
+    expect(drop(big).orb.delivered).toBe(true);
+    // a size the editor wouldn't allow is clamped
+    expect(new Game({ ...big, bowl: { ...big.bowl, size: 50 } }).level.bowl.innerR).toBeCloseTo(std.innerR * 5);
+  });
+
+  it('the orb cannot break on the bowl: dropped from way up, it bounces around and settles in', () => {
     const b = new Game(provingGround as LevelData).level.bowl;
-    const height = (cfg.orbMaxImpact * 1.5) ** 2 / (2 * cfg.gravity);
-    const g = dropScene({ x: b.cx, y: b.rimY - height });
+    const g = dropScene({ x: b.cx, y: b.rimY - 300 }); // hits at ~ 2x what used to shatter it
+    run(g, 6);
+    expect(g.lastOrbLoss).toBe('');
+    expect(g.orb.delivered).toBe(true);
+  });
+
+  it('an orb dropped right onto the rim never ends up balanced there', () => {
+    for (const size of [1, 3]) {
+      const big = { ...(provingGround as LevelData), bowl: { ...(provingGround as LevelData).bowl, size } };
+      for (const side of [-1, 1]) {
+        const g = new Game(big);
+        const b = g.level.bowl;
+        g.heli.landed = false; g.onLaunchPad = false;
+        g.heli.pos = { x: b.cx, y: -900 };
+        g.orb.free = true;
+        g.orb.pos = { x: b.cx + side * b.halfW, y: b.rimY - 150 }; // straight down onto the outer corner
+        g.orb.vel = { x: 0, y: 0 };
+        run(g, 8);
+        expect(g.orb.delivered || g.lastOrbLoss !== '', `size ${size} side ${side}`).toBe(true);
+      }
+    }
+  });
+
+  it('a hard throw that misses the bowl and hits the ground still shatters it; a new orb appears', () => {
+    const b = new Game(provingGround as LevelData).level.bowl;
+    const g = dropScene({ x: b.cx + 300, y: b.rimY - 300 });
     run(g, 2.5);
-    expect(g.lastOrbLoss).toMatch(/impact/);
+    expect(g.lastOrbLoss).toMatch(/ground/);
     expect(g.orb.delivered).toBe(false);
     expect(g.phase).toBe('playing');
     run(g, 2);
@@ -233,11 +281,11 @@ describe('orb bowl, release and return to base', () => {
     expect(g.orb.delivered).toBe(true);
   });
 
-  it('slamming the carried orb into the bowl destroys the orb but the pilot lives', () => {
+  it('slamming the carried orb into the bowl just lets go of it (the bowl cannot break it)', () => {
     const g = new Game(provingGround as LevelData);
     const b = g.level.bowl;
     const orbPos = { x: b.cx, y: b.rest.y - 4 };
-    const v = cfg.orbMaxImpact * 1.6;
+    const v = 400;
     g.heli.landed = false; g.onLaunchPad = false;
     g.heli.pos = { x: orbPos.x, y: orbPos.y - cfg.rodLength - 16 };
     g.heli.vel = { x: 0, y: v };
@@ -245,8 +293,7 @@ describe('orb bowl, release and return to base', () => {
     g.orb.pos = orbPos;
     g.orb.vel = { x: 0, y: v };
     run(g, 0.1);
-    expect(g.phase).toBe('playing');
-    expect(g.lastOrbLoss).toMatch(/impact/);
+    expect(g.lastOrbLoss).toBe('');
     expect(g.orb.attached).toBe(false);
   });
 

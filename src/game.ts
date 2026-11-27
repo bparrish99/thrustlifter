@@ -670,7 +670,7 @@ export class Game {
       const p = orb.pos;
       for (const s of segmentsNear(this.level, p.x - r, p.y - r, p.x + r, p.y + r)) {
         if (distPointSegment(p, s.a, s.b) >= r - 0.5) continue;
-        if (s.bowl) return this.bowlContact(s);
+        if (s.bowl) return this.bowlContact();
         return this.loseOrb('it hit the ground');
       }
       for (const t of this.turrets) {
@@ -694,19 +694,10 @@ export class Game {
     }
   }
 
-  /** Carried orb touched the bowl: gentle enough = it lets go and the bowl takes it; too hard = shattered. */
-  private bowlContact(s: Segment): void {
-    const impact = this.impactSpeed(s);
-    if (impact <= this.cfg.orbMaxImpact) return this.release();
-    this.loseOrb(`impact ${impact.toFixed(0)} > ${this.cfg.orbMaxImpact}`);
-  }
-
-  /** How hard the orb is moving into a segment (normal component of velocity). */
-  private impactSpeed(s: Segment): number {
-    const c = closestPointSegment(this.orb.pos, s.a, s.b);
-    const d = dist(this.orb.pos, c) || 1;
-    const n = { x: (this.orb.pos.x - c.x) / d, y: (this.orb.pos.y - c.y) / d };
-    return Math.max(0, -dot(this.orb.vel, n));
+  /** Carried orb touched the bowl: it lets go and the bowl takes it. The bowl is made of something
+   *  the orb is immune to, so no hit on it is too hard (owner's call, for lobbing it in from afar). */
+  private bowlContact(): void {
+    this.release();
   }
 
   /** Let go of the orb. It keeps its momentum. */
@@ -745,8 +736,7 @@ export class Game {
       orb.pos.y += n.y * pen;
       const vn = dot(orb.vel, n);
       if (vn >= 0) continue;
-      const impact = -vn;
-      if (impact > cfg.orbMaxImpact) return this.loseOrb(`impact ${impact.toFixed(0)} > ${cfg.orbMaxImpact}`);
+      const impact = -vn; // however hard: the orb can't break on the bowl
       const e = impact < 25 ? 0 : cfg.orbBounce; // small knocks don't bounce, so it can settle
       const tx = orb.vel.x - vn * n.x;
       const ty = orb.vel.y - vn * n.y;
@@ -761,6 +751,10 @@ export class Game {
     if (inCup && len(orb.vel) < 25) {
       this.settleTime += dt;
       if (this.settleTime > 0.35) this.deliver();
+    } else if (contacts.length && !inCup && len(orb.vel) < 25) {
+      // balanced on the bowl's rim: tip it in
+      orb.vel.x += Math.sign(bowl.cx - orb.pos.x) * 60 * dt;
+      this.settleTime = 0;
     } else {
       this.settleTime = 0;
     }
@@ -2079,14 +2073,6 @@ export class Game {
   hoverRpm(): number {
     const m = this.cfg.heliMass + (this.orb.attached ? this.cfg.orbMass : 0);
     return (m * this.cfg.gravity) / this.cfg.maxThrust;
-  }
-
-  /** Orb speed readout for the HUD when carrying it near the bowl, else null. */
-  orbApproach(): { speed: number; safe: boolean } | null {
-    if (!this.alive || !(this.orb.attached || this.orb.free)) return null;
-    if (dist(this.orb.pos, this.level.bowl.rest) > 320) return null;
-    const speed = len(this.orb.vel);
-    return { speed, safe: speed <= this.cfg.orbMaxImpact };
   }
 
   /** y of the first solid surface straight below p (within maxDist), or null. */

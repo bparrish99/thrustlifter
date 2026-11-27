@@ -73,6 +73,7 @@ export class Renderer {
   private far: Vec[] = [];
   private terrainPaths: Path2D[] = [];
   private terrainAll: Path2D | null = null;
+  private terrainEdge: Path2D | null = null;
   private rockPattern: CanvasPattern | null = null;
   private nebula: HTMLCanvasElement | null = null;
   private terrainFor: unknown = null;
@@ -347,6 +348,8 @@ export class Renderer {
     });
     this.terrainAll = new Path2D();
     for (const p of this.terrainPaths) this.terrainAll.addPath(p);
+    // the lit edge follows only the surface facing air (seams where rocks overlap stay hidden)
+    this.terrainEdge = outlinePath(game.level.outline);
   }
 
   private drawTerrain(game: Game): void {
@@ -375,11 +378,11 @@ export class Renderer {
       for (const [w, a] of [[36, 0.05], [16, 0.08]] as const) {
         ctx.globalAlpha = a * config.glow;
         ctx.lineWidth = w;
-        for (const p of this.terrainPaths) ctx.stroke(p);
+        if (this.terrainEdge) ctx.stroke(this.terrainEdge);
       }
       ctx.restore();
     }
-    for (const p of this.terrainPaths) glow(ctx, p, edge, 2, config.glow);
+    if (this.terrainEdge) glow(ctx, this.terrainEdge, edge, 2, config.glow);
 
     for (const { pad, pts } of game.level.padPolygons) {
       // your pad: steady green. Rescue (enemy) pads: blinking red, turning yellow once you're
@@ -1375,7 +1378,7 @@ export class Renderer {
       c.globalAlpha = 0.8;
       c.lineWidth = 1.4 / k;
       c.lineJoin = 'round';
-      for (const p of paths) c.stroke(p);
+      c.stroke(outlinePath(level.outline));
       cache = this.minimapCache = { level, w, h, dpr: this.dpr, img, bounds };
     }
     const { w, h, bounds } = cache;
@@ -1434,7 +1437,7 @@ export class Renderer {
       ctx.fillRect(a.x, a.y - 3, Math.max(4, wd * k), 3);
     };
     for (const p of level.data.pads) bar(p.x, p.y, p.w, p.kind === 'start' ? C.startPad : C.padSafe);
-    bar(level.bowl.cx - 40, level.bowl.rimY + 20, 80, C.bowl);
+    bar(level.bowl.cx - level.bowl.halfW, level.bowl.rimY + 20, level.bowl.halfW * 2, C.bowl);
     for (const t of game.fuelTanks) if (t.alive) pip({ x: t.pos.x, y: t.pos.y - 10 }, COLORS.fuel, 2, true);
     // enemies are deliberately left off (owner's call): you find them by flying
     const orb = game.orb;
@@ -1672,6 +1675,18 @@ export class Renderer {
 }
 
 // -------------------------------------------------------------- helpers
+
+/** A path along rock edges, joining edges that meet end to end (so corners are drawn as corners). */
+function outlinePath(edges: [Vec, Vec][]): Path2D {
+  const p = new Path2D();
+  let last: Vec | null = null;
+  for (const [a, b] of edges) {
+    if (!last || Math.abs(last.x - a.x) > 0.01 || Math.abs(last.y - a.y) > 0.01) p.moveTo(a.x, a.y);
+    p.lineTo(b.x, b.y);
+    last = b;
+  }
+  return p;
+}
 
 function glow(ctx: CanvasRenderingContext2D, path: Path2D, color: string | CanvasGradient, width: number, intensity = 1): void {
   if (intensity <= 0) return;

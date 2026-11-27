@@ -141,7 +141,7 @@ function frame(now: number): void {
 
   const { game: gi, meta } = input.poll();
   if (DEV && meta.toggleEditor) {
-    if (editor.active) editor.onExit?.();
+    if (editor.active) editor.requestExit();
     else if (testing) {
       testing = false;
       editor.resume();

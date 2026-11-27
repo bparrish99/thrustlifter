@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULTS } from '../config';
-import { buildLevel } from '../level';
+import { buildLevel, exposedEdges } from '../level';
 import order from '../levels/order.json';
 import { ALL_LEVEL_FILES, LEVELS, LEVEL_FILES, SHELVED_LEVEL_FILES, levelFile } from '../levels';
-import { cutRock, cutsThroughRock, outlinePos, padHostages, strayHostages, tankOrbConflict, formatLevel, groundBelow, nearestSurface, newLevelTemplate, slugFile, snapToGround, tightSpots, validate } from './tools';
+import { bridgesAir, joinFill, cutRock, cutsThroughRock, outlinePos, padHostages, strayHostages, tankOrbConflict, formatLevel, groundBelow, nearestSurface, newLevelTemplate, slugFile, snapToGround, tightSpots, validate } from './tools';
 
 const cfg = { ...DEFAULTS };
 
@@ -138,4 +138,59 @@ describe('cutting a passage through rock', () => {
     expect(cutsThroughRock(d, { x: 200, y: 0 }, { x: 200, y: 200 })).toBe(true);
     expect(cutsThroughRock(d, { x: 200, y: 0 }, { x: 600, y: 0 })).toBe(false);
   });
+});
+
+describe('joining rock across a gap', () => {
+  // a block of rock with a 100-wide vertical crack down from its top edge (like LAYUP's)
+  const crack = [0, 0, 400, 0, 400, 600, 450, 600, 450, 0, 1000, 0, 1000, 1000, 0, 1000];
+  const level = (terrain: number[][]) => ({ ...newLevelTemplate(), terrain });
+  const insideAny = (terrain: number[][], x: number, y: number) =>
+    buildLevel(level(terrain)).polygons.some((pts) => {
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const a = pts[i], b = pts[j];
+        if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      return inside;
+    });
+
+  it('only a line across open air counts as a join', () => {
+    expect(bridgesAir(level([crack]), { x: 400, y: 300 }, { x: 450, y: 300 })).toBe(true);
+    expect(bridgesAir(level([crack]), { x: 0, y: 300 }, { x: 400, y: 300 })).toBe(false); // through rock
+  });
+
+  it('fills the crack flush against both walls', () => {
+    // left wall runs 400,0 -> 400,600 (outline position 400..1000); right wall 450,600 -> 450,0
+    const sA = outlinePos(crack, 1, { x: 400, y: 300 });
+    const sB = outlinePos(crack, 3, { x: 450, y: 300 });
+    const fill = joinFill(crack, sA, crack, sB, 200)!;
+    expect(fill).not.toBeNull();
+    const t = [crack, fill];
+    expect(insideAny(t, 425, 300)).toBe(true); // crack filled where joined
+    expect(insideAny(t, 425, 390)).toBe(true);
+    expect(insideAny(t, 425, 100)).toBe(false); // the rest of the crack is still open
+    expect(insideAny(t, 425, 550)).toBe(false);
+  });
+
+  it('seams where rocks meet are not drawn or collided with', () => {
+    const sA = outlinePos(crack, 1, { x: 400, y: 300 });
+    const sB = outlinePos(crack, 3, { x: 450, y: 300 });
+    const fill = joinFill(crack, sA, crack, sB, 200)!;
+    const lvl = buildLevel(level([crack, fill]));
+    const touches = (x: number, y: number) => lvl.outline.some(([a, b]) => Math.min(a.x, b.x) - 1 <= x && x <= Math.max(a.x, b.x) + 1 && Math.min(a.y, b.y) - 1 <= y && y <= Math.max(a.y, b.y) + 1);
+    expect(touches(400, 300)).toBe(false); // wall behind the filler: hidden
+    expect(touches(450, 300)).toBe(false);
+    expect(touches(400, 100)).toBe(true); // open crack wall: still a surface
+    expect(lvl.segments.length).toBeGreaterThan(0);
+  });
+
+  it('overlapping rocks hide the edges buried inside each other; separate rocks keep every edge', () => {
+    const sq = (x: number, y: number, w: number) => [{ x, y }, { x: x + w, y }, { x: x + w, y: y + w }, { x, y: y + w }];
+    const apart = exposedEdges([sq(0, 0, 100), sq(300, 0, 100)]);
+    expect(apart.length).toBe(8);
+    const len = (es: ReturnType<typeof exposedEdges>) => es.reduce((t, [a, b]) => t + Math.hypot(b.x - a.x, b.y - a.y), 0);
+    // two 100-squares overlapping by half: the union's perimeter is 600
+    expect(len(exposedEdges([sq(0, 0, 100), sq(50, 0, 100)]))).toBeCloseTo(600, -1);
+  });
+
 });
