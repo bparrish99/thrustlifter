@@ -30,6 +30,8 @@ export interface FrameInput {
   flip: boolean; // edge
   pickup: boolean; // held: tether
   pickupPressed: boolean; // edge: release when carrying
+  /** Edge: fire was pressed this frame. One missile per press (holding it doesn't auto-fire). */
+  firePressed: boolean;
   restart: boolean; // edge
 }
 
@@ -292,6 +294,8 @@ export class Game {
 
   private acc = 0;
   private missileCd = 0;
+  /** Fire was pressed and that missile hasn't gone yet (waits out the cooldown; dropped if the shield is up or you're landed). */
+  private firePending = false;
 
   readonly levelNumber: number;
   readonly hasNextLevel: boolean;
@@ -390,6 +394,7 @@ export class Game {
     this.shards = [];
     this.events = [];
     this.deaths = 0;
+    this.firePending = false;
     this.score = this.startScore;
     this.time = 0;
     this.orbLostTimer = 0;
@@ -475,8 +480,9 @@ export class Game {
       return;
     }
     // mission complete: the heli is parked on the pad while the bonuses count; controls are dead
-    if (this.phase === 'complete') input = { ...input, tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false };
+    if (this.phase === 'complete') input = { ...input, tiltAxis: 0, rotor: 0, dive: 0, fire: false, firePressed: false, flip: false, pickup: false, pickupPressed: false };
     if (input.flip && this.alive) this.heli.facing = this.heli.facing === 1 ? -1 : 1;
+    if (input.firePressed && this.alive) this.firePending = true;
     if (input.pickupPressed && this.alive && this.orb.attached) {
       this.release();
       this.spaceMode = 'release'; // this press is spent on the release; no re-grab, no shield
@@ -569,7 +575,7 @@ export class Game {
       this.collide();
       if (this.phase === 'playing' && this.strandedTime > 2.5) this.strand();
       if (this.alive) this.pickupAndDeliver(input);
-      if (this.alive) this.weapons(input, dt);
+      if (this.alive) this.weapons(dt);
     }
 
     if (orb.free) this.stepFreeOrb(dt);
@@ -597,6 +603,7 @@ export class Game {
   private respawn(): void {
     this.phase = this.completedAt !== null ? 'complete' : 'playing';
     this.phaseTime = 0;
+    this.firePending = false; // a press from before the crash doesn't fire on respawn
     const carrying = this.carryingAtDeath && !this.orb.delivered;
     this.carryingAtDeath = false;
     if (!this.orb.delivered && !carrying) {
@@ -1056,12 +1063,15 @@ export class Game {
 
   // ---------------------------------------------------------------- weapons
 
-  private weapons(input: FrameInput, dt: number): void {
+  private weapons(dt: number): void {
     const h = this.heli;
     const cfg = this.cfg;
     this.missileCd -= dt;
 
-    if (input.fire && this.missileCd <= 0 && !h.landed) {
+    // one missile per press (owner's call: no holding fire down), and none while the shield is up
+    if (this.firePending && (this.shield || h.landed)) this.firePending = false;
+    if (this.firePending && this.missileCd <= 0) {
+      this.firePending = false;
       this.missileCd = cfg.missileCooldown;
       const dir = noseDir(h.tilt, h.facing);
       const speed = Math.min(cfg.missileLaunchSpeed, cfg.missileSpeed);

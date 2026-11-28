@@ -249,7 +249,7 @@ export class Editor {
       this.game = new Game(preview, { levelNumber: 0 });
       this.game.message = null;
       // one tiny step so guards appear parked on their pads
-      this.game.update({ tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false, restart: false }, 1 / 120);
+      this.game.update({ tiltAxis: 0, rotor: 0, dive: 0, fire: false, firePressed: false, flip: false, pickup: false, pickupPressed: false, restart: false }, 1 / 120);
       this.game.events.length = 0;
     } catch (e) {
       this.flash(`Can't build level: ${String(e)}`);

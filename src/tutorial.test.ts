@@ -6,7 +6,7 @@ import { levelFile } from './levels';
 const PROVING_GROUND = levelFile('proving-ground.json')!;
 const DEEP_CAVERNS = levelFile('deep-caverns.json')!;
 
-const idle: FrameInput = { tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false, restart: false };
+const idle: FrameInput = { tiltAxis: 0, rotor: 0, dive: 0, fire: false, firePressed: false, flip: false, pickup: false, pickupPressed: false, restart: false };
 const run = (g: Game, input: FrameInput, seconds: number) => {
   for (let t = 0; t < seconds; t += 1 / 60) {
     g.update(input, 1 / 60);

@@ -79,6 +79,7 @@ export class Input {
     let flip = this.hit('flip');
     let pickup = this.held('beam');
     let pickupPressed = this.hit('beam');
+    let firePressed = this.hit('fire');
     let restart = this.hit('restart');
     let pause = this.hit('pause') || this.p('Tab');
     let toggleMute = this.hit('mute');
@@ -107,6 +108,7 @@ export class Input {
       rotor = Math.max(rotor, value(pb('rotor')));
       dive = Math.max(dive, value(pb('dive')), stickDown);
       fire ||= pressedNow(pb('fire'));
+      firePressed ||= edge(pb('fire'));
       flip ||= edge(pb('flip'));
       pickup ||= pressedNow(pb('beam'));
       pickupPressed ||= edge(pb('beam'));
@@ -119,7 +121,7 @@ export class Input {
     this.pressed.clear();
     tiltAxis = Math.max(-1, Math.min(1, tiltAxis));
     return {
-      game: { tiltAxis, rotor, dive, fire, flip, pickup, pickupPressed, restart },
+      game: { tiltAxis, rotor, dive, fire, firePressed, flip, pickup, pickupPressed, restart },
       meta: { pause, toggleTuning, toggleMute, toggleEditor, nextLevel, jumpLevel, saveState, loadState },
     };
   }

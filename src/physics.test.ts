@@ -16,7 +16,7 @@ import { ANCHOR, createHeli, heliPoint, integrate, noseDir, rotorNormal, solveRo
 const cfg = { ...DEFAULTS };
 /** Proving Ground with its rescue-pad guards removed (for tests about landing there). */
 const noGuards = { ...(provingGround as LevelData), pads: (provingGround as LevelData).pads.map((p) => ({ ...p, guards: 0 })) } as LevelData;
-const idle: FrameInput = { tiltAxis: 0, rotor: 0, dive: 0, fire: false, flip: false, pickup: false, pickupPressed: false, restart: false };
+const idle: FrameInput = { tiltAxis: 0, rotor: 0, dive: 0, fire: false, firePressed: false, flip: false, pickup: false, pickupPressed: false, restart: false };
 
 describe('geometry', () => {
   it('tilting right points the rotor up-right and dips the nose when facing right', () => {
@@ -134,12 +134,43 @@ describe('weapons', () => {
 
   it('missiles leave slow and accelerate to top speed', () => {
     const g = flying();
-    g.update({ ...idle, rotor: 1, fire: true }, STEP);
+    g.update({ ...idle, rotor: 1, fire: true, firePressed: true }, STEP);
     const m = g.projectiles.find((p) => p.kind === 'missile')!;
     const s0 = m.speed!;
     expect(s0).toBeLessThan(cfg.missileSpeed * 0.5);
     for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
     expect(m.speed).toBe(cfg.missileSpeed);
+  });
+
+  const missiles = (g: Game) => g.projectiles.filter((p) => p.kind === 'missile').length;
+
+  it('holding fire down fires one missile, not a stream', () => {
+    const g = flying();
+    g.update({ ...idle, rotor: 1, fire: true, firePressed: true }, 1 / 60);
+    for (let i = 0; i < 60; i++) g.update({ ...idle, rotor: 1, fire: true }, 1 / 60);
+    expect(missiles(g)).toBe(1);
+  });
+
+  it('each press fires one, and a quick second press waits out the cooldown instead of being lost', () => {
+    const g = flying();
+    g.update({ ...idle, rotor: 1, fire: true, firePressed: true }, 1 / 60);
+    g.update({ ...idle, rotor: 1 }, 1 / 60);
+    g.update({ ...idle, rotor: 1, fire: true, firePressed: true }, 1 / 60); // well inside the cooldown
+    expect(missiles(g)).toBe(1);
+    for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
+    expect(missiles(g)).toBe(2);
+  });
+
+  it('no firing while the shield is up', () => {
+    const g = flying();
+    g.update({ ...idle, rotor: 1, pickup: true, pickupPressed: true }, 1 / 60); // shield on (nothing in reach)
+    expect(g.shield).toBe(true);
+    for (let i = 0; i < 10; i++) g.update({ ...idle, rotor: 1, pickup: true, fire: true, firePressed: i % 2 === 0 }, 1 / 60);
+    for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 1, pickup: true }, 1 / 60);
+    expect(missiles(g)).toBe(0);
+    // a press made under the shield doesn't fire later when it drops either
+    for (let i = 0; i < 30; i++) g.update({ ...idle, rotor: 1 }, 1 / 60);
+    expect(missiles(g)).toBe(0);
   });
 });
 
@@ -322,7 +353,8 @@ describe('orb bowl, release and return to base', () => {
     g.heli.pos = { x: 1200, y: 300 };
     g.heli.tilt = g.heli.tiltTarget = 0;
     g.heli.facing = 1;
-    run(g, 0.6, { fire: true });
+    g.update({ ...idle, rotor: hoverSolo(), fire: true, firePressed: true }, 1 / 60);
+    run(g, 0.6);
     expect(g.lastOrbLoss).toMatch(/shot/);
   });
 
