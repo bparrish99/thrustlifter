@@ -146,6 +146,7 @@ let paused = false;
 
 function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 0.05);
+  renderer.noteFrame(now - last);
   last = now;
 
   if (menu.open) {

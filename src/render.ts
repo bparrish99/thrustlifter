@@ -81,7 +81,6 @@ export class Renderer {
   private terrainAll: Path2D | null = null;
   private terrainEdge: Path2D | null = null;
   private rockPattern: CanvasPattern | null = null;
-  private cavePattern: CanvasPattern | null = null;
   private nebula: HTMLCanvasElement | null = null;
   private terrainFor: unknown = null;
   private cam = { x: 0, y: 0, init: false };
@@ -114,8 +113,57 @@ export class Renderer {
     addEventListener('resize', () => this.resize());
   }
 
+  /**
+   * Automatic resolution drop for machines that can't keep up. The canvas normally draws at the screen's
+   * full pixel density (capped at 2x). If frames keep coming in well under 50 fps, it draws at a lower
+   * resolution and the browser stretches it to the window, one step at a time, never back up within a
+   * session. A machine that keeps up is never touched. Off under automation, so screenshots stay sharp.
+   */
+  private resScale = 1;
+  private static readonly RES_STEPS = [1, 0.75, 0.55, 0.4];
+  private frameTimes: number[] = [];
+  private resCooldown = 2; // seconds before judging (level load hitches, browser warm-up)
+
+  /** Called once per animation frame with the real time since the last one (ms). */
+  noteFrame(ms: number): void {
+    if (typeof navigator !== 'undefined' && navigator.webdriver) return;
+    // a long gap means the tab was hidden or the machine hiccuped: not evidence either way
+    if (ms > 250 || document.hidden) {
+      this.frameTimes.length = 0;
+      return;
+    }
+    if (this.resCooldown > 0) {
+      this.resCooldown -= ms / 1000;
+      return;
+    }
+    this.frameTimes.push(ms);
+    let total = 0;
+    for (const t of this.frameTimes) total += t;
+    if (total < 1500) return;
+    const sorted = [...this.frameTimes].sort((a, b) => a - b);
+    const median = sorted[sorted.length >> 1];
+    this.frameTimes.length = 0;
+    const steps = Renderer.RES_STEPS;
+    const i = steps.indexOf(this.resScale);
+    // the median ignores one-off spikes; 21.5 ms is ~46 fps, so even a 50 Hz screen never triggers it
+    if (median > 21.5 && i < steps.length - 1 && this.baseDpr() * steps[i + 1] >= 0.5) {
+      this.resScale = steps[i + 1];
+      this.resize();
+      this.resCooldown = 1;
+    }
+  }
+
+  /** The current drawing resolution, as a fraction of the screen's own (for the console and the FPS readout). */
+  get resolution(): number {
+    return this.resScale;
+  }
+
+  private baseDpr(): number {
+    return Math.min(devicePixelRatio || 1, 2);
+  }
+
   private resize(): void {
-    this.dpr = Math.min(devicePixelRatio || 1, 2);
+    this.dpr = this.baseDpr() * this.resScale;
     this.w = innerWidth;
     this.h = innerHeight;
     this.canvas.width = Math.round(this.w * this.dpr);
@@ -404,27 +452,8 @@ export class Renderer {
     ctx.fillRect(-200, y0, W + 400, 300);
     ctx.fillStyle = 'rgb(3,2,8)';
     ctx.fillRect(-200, y0 + 300, W + 400, game.level.maxY);
-    // the far cave wall: dark mottled stone with drips and cracks, drifting slower than the rock in
-    // front (parallax) so it reads as distant. Fades in with the backdrop over its first 300.
-    if (!this.cavePattern) this.cavePattern = ctx.createPattern(caveTexture(), 'repeat');
-    if (this.cavePattern) {
-      const k = 0.35; // how much the far wall moves with the camera, vs the foreground's 1
-      this.cavePattern.setTransform(new DOMMatrix().translate(this.cam.x * k, this.cam.y * k).scale(2));
-      ctx.save();
-      ctx.fillStyle = this.cavePattern;
-      // fade in as stacked layers, each reaching all the way down, so there are no seams between
-      // steps (side-by-side strips leave faint lines where their edges meet)
-      const bands = 16;
-      let prev = 0;
-      for (let i = 0; i < bands; i++) {
-        const t = (i + 1) / bands; // total opacity wanted from this step down
-        ctx.globalAlpha = 1 - (1 - t) / (1 - prev);
-        const top = y0 + (300 * i) / bands;
-        ctx.fillRect(-200, top, W + 400, game.level.maxY + 300 - top);
-        prev = t;
-      }
-      ctx.restore();
-    }
+    // Plain black, no far-wall texture: the textured wall (16 stacked see-through layers to fade it
+    // in) was the main frame-rate cost on cave levels on weaker machines, so the owner chose black.
   }
 
   private drawGates(game: Game): void {
@@ -1830,77 +1859,6 @@ function nebulaTexture(): HTMLCanvasElement {
  * A tileable stone texture (built once): layered value noise for mottled rock, ridged noise for
  * lighter mineral veins, relief shading lit from the upper left, and fine grain/speckles.
  */
-/** The far wall behind caves: very dark, low-contrast stone with vertical drip streaks and faint cracks. */
-function caveTexture(): HTMLCanvasElement {
-  const N = 512;
-  let seed = 9001;
-  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  /** Tiling value noise with gx x gy cells (different counts across and down stretch the features). */
-  const octave = (gx: number, gy: number) => {
-    const v = new Float32Array(gx * gy);
-    for (let i = 0; i < v.length; i++) v[i] = rnd();
-    return (x: number, y: number) => {
-      const fx = (x / N) * gx;
-      const fy = (y / N) * gy;
-      const x0 = Math.floor(fx);
-      const y0 = Math.floor(fy);
-      const sx = (fx - x0) * (fx - x0) * (3 - 2 * (fx - x0));
-      const sy = (fy - y0) * (fy - y0) * (3 - 2 * (fy - y0));
-      const at = (i: number, j: number) => v[(((j % gy) + gy) % gy) * gx + (((i % gx) + gx) % gx)];
-      const a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx;
-      const b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx;
-      return a + (b - a) * sy;
-    };
-  };
-  const blotch = [octave(3, 3), octave(6, 6), octave(12, 12), octave(24, 24), octave(48, 48)];
-  const drip = [octave(8, 3), octave(16, 5)]; // narrower across than down: soft vertical seeping
-  const crack = [octave(5, 5), octave(10, 10)];
-  const H = new Float32Array(N * N);
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      let h = 0;
-      let amp = 0.5;
-      for (const o of blotch) {
-        h += o(x, y) * amp;
-        amp *= 0.5;
-      }
-      let d = 0;
-      let da = 0.5;
-      for (const o of drip) {
-        d += o(x, y) * da;
-        da *= 0.5;
-      }
-      H[y * N + x] = h * 0.9 + d * 0.25;
-    }
-  }
-  const c = document.createElement('canvas');
-  c.width = N;
-  c.height = N;
-  const g = c.getContext('2d')!;
-  const img = g.createImageData(N, N);
-  const at = (x: number, y: number) => H[((y + N) % N) * N + ((x + N) % N)];
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      const i = y * N + x;
-      const h = at(x, y);
-      // light from above-left: a hint of relief so it reads as rough stone, not fog
-      const relief = 1 + (at(x - 2, y - 2) - at(x + 2, y + 2)) * 5;
-      // thin dark cracks where the crack noise crosses its midline
-      let cr = 0;
-      for (const o of crack) cr = Math.max(cr, 1 - Math.abs(o(x, y) * 2 - 1) * 28);
-      const dark = 1 - Math.max(0, cr) * 0.55;
-      const v = Math.max(0, h - 0.3) * relief * dark;
-      const grain = (rnd() - 0.5) * 3;
-      img.data[i * 4] = Math.max(0, Math.min(255, 4 + v * 34 + grain));
-      img.data[i * 4 + 1] = Math.max(0, Math.min(255, 3 + v * 26 + grain));
-      img.data[i * 4 + 2] = Math.max(0, Math.min(255, 9 + v * 62 + grain * 1.4));
-      img.data[i * 4 + 3] = 255;
-    }
-  }
-  g.putImageData(img, 0, 0);
-  return c;
-}
-
 function rockTexture(): HTMLCanvasElement {
   const N = 512;
   let seed = 4242;
@@ -2040,6 +1998,52 @@ function dot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, col
   ctx.restore();
 }
 
+/**
+ * Glowing text is cached: each (string, size, colour, scale) is drawn once with its shadow blur into a
+ * small offscreen image, then just copied. Live shadow blur on text was over half the frame time on
+ * machines that draw the canvas without the GPU, and the cached image looks the same.
+ */
+const TEXT_CACHE_MAX = 400;
+const textCache = new Map<string, { img: HTMLCanvasElement; left: number; top: number; w: number }>();
+
+function glowTextImage(s: string, px: number, blur: number, color: string) {
+  const key = `${px}|${blur}|${color}|${s}`;
+  const hit = textCache.get(key);
+  if (hit) {
+    textCache.delete(key); // keep recently used entries at the end (oldest get evicted first)
+    textCache.set(key, hit);
+    return hit;
+  }
+  const font = `bold ${px}px ${FONT}`;
+  const probe = document.createElement('canvas').getContext('2d')!;
+  probe.font = font;
+  probe.textBaseline = 'middle';
+  const m = probe.measureText(s);
+  const asc = Math.ceil(m.actualBoundingBoxAscent || px * 0.6);
+  const desc = Math.ceil(m.actualBoundingBoxDescent || px * 0.6);
+  const pad = Math.ceil(blur * 1.6) + 2;
+  const img = document.createElement('canvas');
+  img.width = Math.max(1, Math.ceil(m.width) + pad * 2);
+  img.height = Math.max(1, asc + desc + pad * 2);
+  const c = img.getContext('2d')!;
+  c.font = font;
+  c.textBaseline = 'middle';
+  c.textAlign = 'left';
+  c.globalCompositeOperation = 'lighter';
+  c.shadowColor = color;
+  c.shadowBlur = blur;
+  c.fillStyle = color;
+  c.fillText(s, pad, pad + asc);
+  c.shadowBlur = 0;
+  c.globalAlpha = 0.6;
+  c.fillStyle = '#ffffff';
+  c.fillText(s, pad, pad + asc);
+  const entry = { img, left: pad, top: pad + asc, w: m.width };
+  textCache.set(key, entry);
+  if (textCache.size > TEXT_CACHE_MAX) textCache.delete(textCache.keys().next().value!);
+  return entry;
+}
+
 function text(
   ctx: CanvasRenderingContext2D,
   s: string,
@@ -2051,6 +2055,21 @@ function text(
   alpha = 1,
 ): void {
   if (alpha <= 0) return;
+  const t = ctx.getTransform();
+  if (t.b === 0 && t.c === 0 && t.a > 0 && t.d > 0) {
+    // axis-aligned (all HUD text): draw from the cache in device pixels
+    const px = Math.round(size * t.a * 2) / 2;
+    const e = glowTextImage(s, px, Math.round(size * 0.8 * 2) / 2, color);
+    const dx = t.a * x + t.e - (align === 'center' ? e.w / 2 : align === 'right' || align === 'end' ? e.w : 0);
+    const dy = t.d * y + t.f;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = clamp(alpha, 0, 1);
+    ctx.drawImage(e.img, Math.round(dx - e.left), Math.round(dy - e.top));
+    ctx.restore();
+    return;
+  }
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   ctx.globalAlpha = clamp(alpha, 0, 1);

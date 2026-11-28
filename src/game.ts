@@ -292,7 +292,6 @@ export class Game {
   private strandedTime = 0;
   private settleTime = 0;
 
-  private acc = 0;
   private missileCd = 0;
   /** Fire was pressed and that missile hasn't gone yet (waits out the cooldown; dropped if the shield is up or you're landed). */
   private firePending = false;
@@ -426,7 +425,6 @@ export class Game {
     }
     this.onLaunchPad = !at;
     this.facingVis = 1;
-    this.acc = 0;
   }
 
   /** The level's checkpoints (or, if it has none, one above the bowl). Internal only: no checkpoint UI. */
@@ -488,14 +486,12 @@ export class Game {
       this.spaceMode = 'release'; // this press is spent on the release; no re-grab, no shield
     }
 
-    this.acc += dt;
-    let n = 0;
-    while (this.acc >= STEP && n < 40) {
-      this.substep(input, STEP);
-      this.acc -= STEP;
-      n++;
-    }
-    if (n >= 40) this.acc = 0;
+    // The frame's time in equal substeps of at most STEP (1/240 s). It used to be whole STEPs with the
+    // remainder carried over, which is perfectly even at 60/120 Hz but on a 144 Hz screen gives
+    // 2,2,1,2,2,1 steps per frame: the world visibly lurches (judder) at a high frame rate.
+    const n = Math.min(40, Math.ceil(dt / STEP - 1e-6));
+    const h = n > 0 ? dt / n : 0;
+    for (let i = 0; i < n; i++) this.substep(input, h);
 
     this.stepTally(dt);
     this.frameEffects(input, dt);
