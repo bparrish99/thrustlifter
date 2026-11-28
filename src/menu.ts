@@ -253,7 +253,7 @@ export class Menu {
         el('h2', {}, 'CONTROLS'),
         el('div', { class: 'menu-row menu-head' }, el('div', {}, ''), el('div', {}, 'KEY'), el('div', {}, 'ALT KEY'), el('div', {}, 'GAMEPAD')),
         ...rows,
-        el('div', { class: 'menu-note menu-fixed' }, 'Gamepad: the left stick always tilts, and pushing it down dives. Triggers work as analog thrust and dive.'),
+        el('div', { class: 'menu-note menu-fixed' }, 'F toggles fullscreen (unless you bind F to something above). Gamepad: the left stick always tilts, and pushing it down dives. Triggers work as analog thrust and dive.'),
         el('div', { class: 'menu-status' }, this.note),
         el(
           'div',

@@ -89,6 +89,20 @@ if (DEV && editor.resumeSaved()) {
   menu.hide();
 }
 
+// ---------------------------------------------------------------- F: fullscreen (fixed key, not remappable)
+// Handled right in the key event: browsers only allow fullscreen from a real key press or click
+// (so a gamepad button can't do it). F means "frame all" in the editor, and if the player has bound F
+// to an action on the Controls screen, their binding wins.
+addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyF' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (editor.active || input.suspended) return;
+  if (Object.values(bindings).some((b) => b.keys.includes('KeyF'))) return;
+  const t = e.target;
+  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else void document.documentElement.requestFullscreen?.().catch(() => {});
+});
+
 // ---------------------------------------------------------------- pause screen: Q (or gamepad Y) quits to the title
 
 let quitRequested = false;
@@ -116,7 +130,7 @@ function drawPauseExtras(): void {
     ctx.fillStyle = 'rgba(207,233,255,0.8)';
     lines.forEach((l, i) => ctx.fillText(l, w / 2, y0 + i * 22));
     ctx.fillStyle = '#ffd23f';
-    ctx.fillText(`${keyName(bindings.pause.keys[0]) || 'ESC'} RESUME   ·   Q QUIT TO TITLE${firstGamepad() ? '   ·   GAMEPAD: START RESUME, Y QUIT' : ''}`, w / 2, y0 + lines.length * 22 + 20);
+    ctx.fillText(`${keyName(bindings.pause.keys[0]) || 'ESC'} RESUME   ·   Q QUIT TO TITLE   ·   F FULLSCREEN${firstGamepad() ? '   ·   GAMEPAD: START RESUME, Y QUIT' : ''}`, w / 2, y0 + lines.length * 22 + 20);
     ctx.restore();
   });
 }
@@ -177,14 +191,16 @@ function frame(now: number): void {
     requestAnimationFrame(frame);
     return;
   }
-  // mission complete (any level): Esc, the pause button, or gamepad B goes back to the title
+  // the end of the game (last level's results, tally finished): Esc, the pause button, or gamepad B
+  // goes back to the title, since nothing else happens there. Anywhere else, pause just pauses (it
+  // used to quit to the title on every mission-complete screen, throwing the run away).
   const padNow = firstGamepad();
   const bNow = !!padNow?.buttons[1]?.pressed;
   const bHit = bNow && !prevB;
   prevB = bNow;
   const esc = escRequested;
   escRequested = false;
-  if (game.phase === 'complete' && !testing && !paused && (esc || meta.pause || bHit)) {
+  if (game.phase === 'complete' && !game.hasNextLevel && game.tally?.stage === 'done' && !testing && !paused && (esc || meta.pause || bHit)) {
     quitToTitle();
     requestAnimationFrame(frame);
     return;
