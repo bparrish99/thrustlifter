@@ -1,9 +1,14 @@
 import { config } from './config';
 import { minimapBounds, type MapBounds } from './minimap';
 import { stepCamera } from './camera';
-import { BALLOON_R, COLORS, FUEL_TICKS, POINTS, SHIELD_RADIUS, balloonGun, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, toWorldPoint, turretCentre, type Game } from './game';
-import type { Level } from './level';
+import { BALLOON_R, COLORS, CRADLE_COLOR, FUEL_TICKS, POINTS, SHIELD_RADIUS, balloonGun, TANK_H, TANK_W, TURRET_BARREL, TURRET_RADIUS, toWorldPoint, turretCentre, type Game } from './game';
+import type { Bowl, Level } from './level';
 import { clamp, lerp, type Vec } from './math';
+
+/** SURVIVAL BONUS line on the mission-complete tally. */
+const SURVIVAL_COLOR = '#7fe8ff';
+/** DEATHS line on the mission-complete tally. */
+const DEATHS_COLOR = '#ff6a6a';
 import { ANCHOR, BODY, MAST, NOSE, ROTOR_R, ROTOR_Y, SKID, SKID_TOE, SKID_Y, STRUTS, TAIL_ROTOR_HUB, TAIL_ROTOR_R, toWorld } from './physics';
 
 const P = (x: number, y: number): Vec => ({ x, y });
@@ -236,6 +241,7 @@ export class Renderer {
 
     this.drawBackdrop(game);
     this.drawPedestal(game); // before the rock, so its buried foot is hidden
+    this.drawCradles(game);
     this.drawTerrain(game);
     this.drawGates(game);
     this.drawBowl(game);
@@ -460,7 +466,7 @@ export class Renderer {
     const path = new Path2D();
     pts.forEach((v, i) => (i ? path.lineTo(v.x, v.y) : path.moveTo(v.x, v.y)));
     path.closePath();
-    const home = game.orb.home;
+    const home = game.level.data.orb; // where the pedestal stands (the orb's respawn point can move to a holding spot)
     const top = home.y + 16.5;
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
@@ -493,40 +499,59 @@ export class Renderer {
     }
   }
 
+  /** Holding spots: bowls like the goal bowl in neutral silver, lit while the orb sits in one. */
+  private drawCradles(game: Game): void {
+    const orb = game.orb;
+    for (const c of game.level.cradles) {
+      const holding = !orb.attached && !orb.free && !orb.delivered && orb.pos.x === c.rest.x && orb.pos.y === c.rest.y;
+      // the one a lost orb would come back to (it rested here last) keeps a soft glow
+      const saved = orb.home.x === c.rest.x && orb.home.y === c.rest.y;
+      this.drawCup(c, CRADLE_COLOR, [207, 216, 232], holding ? 1 : saved ? 0.6 : 0, false);
+    }
+  }
+
   private drawBowl(game: Game): void {
-    const ctx = this.ctx;
-    const bowl = game.level.bowl;
     const done = game.orb.delivered;
-    const col = C.bowl;
+    this.drawCup(game.level.bowl, C.bowl, [255, 176, 32], done ? 1 : 0, !done, true);
+  }
+
+  /**
+   * A bowl: dark body, glowing outline, light pooled in the cup. `lit` 0..1 = how full/finished it
+   * looks (the goal bowl once delivered, a holding spot holding the orb). The goal bowl also gets
+   * chevrons pointing in and blinking rim lights.
+   */
+  private drawCup(bowl: Bowl, col: string, rgb: [number, number, number], lit: number, chevrons: boolean, blinkRim = false): void {
+    const ctx = this.ctx;
     const pulse = 0.6 + 0.4 * Math.sin(this.clock * 3);
+    const [r, g0, b] = rgb;
 
     const body = new Path2D();
     bowl.pts.forEach((v, i) => (i ? body.lineTo(v.x, v.y) : body.moveTo(v.x, v.y)));
     body.closePath();
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgb(14,10,4)';
+    ctx.fillStyle = `rgb(${Math.round(r * 0.055)},${Math.round(g0 * 0.055)},${Math.round(b * 0.055)})`;
     ctx.fill(body);
 
-    // warm glow pooled in the cup
+    // glow pooled in the cup
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const g = ctx.createRadialGradient(bowl.cx, bowl.rest.y, 0, bowl.cx, bowl.rest.y, bowl.innerR * 2.2);
-    g.addColorStop(0, `rgba(255,176,32,${done ? 0.45 : 0.12 + 0.1 * pulse})`);
-    g.addColorStop(1, 'rgba(255,176,32,0)');
+    g.addColorStop(0, `rgba(${r},${g0},${b},${0.12 + 0.1 * pulse + lit * 0.25})`);
+    g.addColorStop(1, `rgba(${r},${g0},${b},0)`);
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(bowl.cx, bowl.rest.y, bowl.innerR * 2.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
-    glow(ctx, body, col, 1.8, (done ? 1.2 : 0.8 + 0.2 * pulse) * config.glow);
+    glow(ctx, body, col, 1.8, (0.8 + 0.2 * pulse + lit * 0.3) * config.glow);
     // rim lights
     const blink = Math.floor(this.clock * 3) % 2 === 0;
     for (const side of [-1, 1]) {
-      dot(ctx, bowl.cx + side * (bowl.innerR + 6), bowl.rimY - 1, 1.8, blink || done ? col : '#ffffff');
+      dot(ctx, bowl.cx + side * (bowl.innerR + 6), bowl.rimY - 1, 1.8, !blinkRim || blink || lit >= 1 ? col : '#ffffff');
     }
 
-    if (!done) {
+    if (chevrons) {
       // chevrons pointing into the cup
       for (let i = 0; i < 3; i++) {
         const cy = bowl.rimY - 70 + i * 14 + ((this.clock * 20) % 14);
@@ -1018,7 +1043,7 @@ export class Renderer {
     text(ctx, 'E', x0 + w + 13, y0 + h - 8, 14, '#ff6a6a', 'center', 0.85);
   }
 
-  /** The end-of-level bonus tally, big in the middle of the screen: rescues (if any), time, fuel. */
+  /** The end-of-level bonus tally, big in the middle of the screen: rescues (if any), time, fuel, survival, then deaths on the level. */
   private drawTally(game: Game, y: number): void {
     const t = game.tally!;
     const pulse = 1 + 0.06 * Math.sin(this.clock * 30);
@@ -1048,33 +1073,22 @@ export class Renderer {
     const fuelOn = t.stage === 'fuel';
     text(this.ctx, 'FUEL BONUS', this.w / 2 - 30, row, 30, C.fuelPad, 'right', fuelOn ? 1 : 0.45);
     text(this.ctx, `${t.ticks} × ${POINTS.perFuelTick}`, this.w / 2 + 30, row, 52 * (fuelOn ? pulse : 1), t.ticks > 0 ? C.fuelPad : 'rgba(255,225,77,0.45)', 'left');
+    row += 70;
+    // survival bonus line (no deaths this level): always shown, so you learn it exists; 0 if you died
+    const survOn = t.stage === 'survival';
+    const stamp = survOn && t.survivalPaid ? Math.max(0, 1 - t.t / 0.4) : 0; // pops big as it's paid
+    text(this.ctx, 'SURVIVAL BONUS', this.w / 2 - 30, row, 30, SURVIVAL_COLOR, 'right', survOn ? 1 : 0.45);
+    text(this.ctx, t.survival ? `${POINTS.survival}` : '0', this.w / 2 + 30, row, 52 * (1 + stamp * 0.4) * (survOn && !t.survivalPaid ? pulse : 1), t.survival ? SURVIVAL_COLOR : 'rgba(127,232,255,0.45)', 'left', t.survival ? 1 : 0.6);
+    row += 70;
+    // deaths on this level (not a payout: shown throughout, a badge of honour or shame)
+    const deaths = game.deaths;
+    text(this.ctx, 'DEATHS', this.w / 2 - 30, row, 30, DEATHS_COLOR, 'right', 0.85);
+    text(this.ctx, String(deaths), this.w / 2 + 30, row, 52, deaths > 0 ? DEATHS_COLOR : 'rgba(255,106,106,0.45)', 'left', deaths > 0 ? 1 : 0.6);
   }
 
   /** A little hostage (the same figure as in the level, standing, arms down) for the carried count. */
   private drawHostageIcon(x: number, y: number, k: number, alpha = 1): void {
     drawPerson(this.ctx, x, y, k, 'idle', 1, 0, alpha, true);
-  }
-
-  /** A tiny helicopter silhouette for the lives display. */
-  private drawLifeIcon(x: number, y: number, size = 0.5): void {
-    const P = (px: number, py: number) => ({ x: x + px * size, y: y + py * size });
-    const p = new Path2D();
-    BODY.forEach((v, i) => {
-      const q = P(v.x, v.y);
-      i ? p.lineTo(q.x, q.y) : p.moveTo(q.x, q.y);
-    });
-    p.closePath();
-    const seg = (a: Vec, b: Vec) => {
-      const A = P(a.x, a.y);
-      const B = P(b.x, b.y);
-      p.moveTo(A.x, A.y);
-      p.lineTo(B.x, B.y);
-    };
-    seg({ x: -15, y: 0 }, { x: -44, y: -3 });
-    seg({ x: -44, y: -3 }, { x: -48, y: -12 });
-    seg({ x: -ROTOR_R, y: ROTOR_Y }, { x: ROTOR_R, y: ROTOR_Y });
-    seg(SKID[0], SKID[1]);
-    glow(this.ctx, p, COLORS.heli, 1.1, 0.9 * config.glow);
   }
 
   /** Fuel tanks: a squat canister with a fill gauge; a beam while you're sucking one dry. */
@@ -1374,6 +1388,7 @@ export class Renderer {
     };
     for (const p of level.data.pads) bar(p.x, p.y, p.w, p.kind === 'start' ? C.startPad : C.padSafe);
     bar(level.bowl.cx - level.bowl.halfW, level.bowl.rimY + 20, level.bowl.halfW * 2, C.bowl);
+    for (const c of level.cradles) bar(c.cx - c.halfW, c.rimY + 20, c.halfW * 2, CRADLE_COLOR);
     for (const t of game.fuelTanks) if (t.alive) pip({ x: t.pos.x, y: t.pos.y - 10 }, COLORS.fuel, 2, true);
     // enemies are deliberately left off (owner's call): you find them by flying
     const orb = game.orb;
@@ -1494,23 +1509,17 @@ export class Renderer {
     }
     this.scorePop = Math.max(0, this.scorePop - this.frameDt * 2.5);
 
-    // ---- top left, one line: score then lives, in a compact translucent box
+    // ---- top left: the score, in a compact translucent box (no lives: unlimited, owner's call)
     const rowH = 52;
     const rowY = 10 + rowH / 2; // centre line of both top boxes
     const pop = this.scorePop;
-    const lives = Math.max(0, game.lives);
-    const lf = game.lifeFlash;
     const scoreStr = String(game.score).padStart(6, '0');
     ctx.save();
     ctx.font = `bold 32px ${FONT}`;
     const scoreW = ctx.measureText(scoreStr).width;
     ctx.restore();
-    const lifeX0 = 24 + scoreW + 42; // icon centres (each reaches ~22px left of its centre, tail first)
-    const lw = lifeX0 - 12 + (lives - 1) * 48 + 30 + (lf > 0 ? 64 : 0);
-    hudBox(ctx, 12, 10, lw, rowH, COLORS.heli);
+    hudBox(ctx, 12, 10, scoreW + 24, rowH, COLORS.heli);
     text(ctx, scoreStr, 24, rowY + 1, 32 + pop * 6, pop > 0 ? '#fff4b0' : COLORS.heli, 'left');
-    for (let i = 0; i < lives; i++) this.drawLifeIcon(lifeX0 + i * 48, rowY + 3, 0.45 * (i === lives - 1 ? 1 + lf * 0.4 * Math.abs(Math.sin(this.clock * 10)) : 1));
-    if (lf > 0) text(ctx, '1UP!', lifeX0 + lives * 48 - 16, rowY, 20, '#3dff8a', 'left', Math.min(1, lf * 2));
 
     // ---- top right, one line: time bonus, hostage icon + rescued count, orb lamp (no labels)
     const t = game.bonusTime;
@@ -1555,7 +1564,7 @@ export class Renderer {
     const gy = fby + 10;
     this.gaugeRect = { x: gx, y: gy, w: gw, h: gh };
     this.hudRects = [
-      { l: 12, r: 12 + lw, t: 10, b: 10 + rowH },
+      { l: 12, r: 12 + scoreW + 24, t: 10, b: 10 + rowH },
       { l: bx, r: bx + bw, t: by, b: by + bh },
       { l: fbx, r: fbx + fbw, t: fby, b: fby + fbh },
     ];

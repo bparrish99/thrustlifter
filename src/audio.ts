@@ -306,13 +306,20 @@ export class Sound {
         this.tone(t + 0.03, { type: 'sine', f0: f * 2, f1: f * 2, dur: 0.2, gain: 0.06, attack: 0.003 });
         break;
       }
+      case 'parked': // the orb settles on a holding spot: a soft, low two-note "clunk-ting"
+        this.tone(t, { type: 'sine', f0: 180, f1: 120, dur: 0.18, gain: 0.25 * v, attack: 0.003 });
+        this.tone(t + 0.04, { type: 'triangle', f0: 587.33, f1: 587.33, dur: 0.5, gain: 0.09 * v, attack: 0.004, lowpass: 2400 });
+        this.tone(t + 0.12, { type: 'triangle', f0: 880, f1: 880, dur: 0.6, gain: 0.07 * v, attack: 0.004, lowpass: 2400 });
+        break;
+      case 'tallySurvival': // no deaths: a deep thump under a big bright chord, one beat
+        this.tone(t, { type: 'sine', f0: 130.81, f1: 65.41, dur: 0.5, gain: 0.3, attack: 0.003 });
+        [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) =>
+          this.tone(t + i * 0.02, { type: 'square', f0: f, f1: f, dur: 0.9, gain: 0.05, attack: 0.004, lowpass: 3200 }),
+        );
+        this.tone(t, { type: 'triangle', f0: 1568, f1: 1568, dur: 1.1, gain: 0.07, attack: 0.004 });
+        break;
       case 'tallyDone': // final chord
         for (const f of [523.25, 659.25, 783.99, 1046.5]) this.tone(t, { type: 'triangle', f0: f, f1: f, dur: 1.4, gain: 0.08, attack: 0.01, lowpass: 2600 });
-        break;
-      case 'extraLife': // classic arcade 1-up arpeggio
-        [523.25, 659.25, 783.99, 1046.5, 1318.5, 1568].forEach((f, i) =>
-          this.tone(t + i * 0.06, { type: 'square', f0: f, f1: f, dur: i === 5 ? 0.5 : 0.1, gain: 0.07, attack: 0.004, lowpass: 3000 }),
-        );
         break;
       case 'balloonPop': // pop! then a rubbery flap of falling scraps
         this.noiseHit(t, { dur: 0.12, type: 'highpass', f0: 1200, f1: 600, gain: 0.6 * v });

@@ -127,6 +127,13 @@ export function validate(d: LevelData, cfg: Config): Problem[] {
   const g = groundBelow(d, d.orb, 400);
   if (g === null || Math.abs(g - (d.orb.y + 16.5 + ORB_PEDESTAL_HEIGHT)) > 20)
     out.push({ level: 'warn', text: 'The orb pedestal isn’t standing on the ground (drag the orb to re-seat it).', at: d.orb });
+  for (const c of d.cradles ?? []) {
+    const k = bowlSize(c);
+    const rimY = c.y - BOWL_RIM_H * k - 6;
+    if (insideRock(d, { x: c.x, y: rimY })) out.push({ level: 'error', text: 'A holding spot is buried in rock.', at: c });
+    else if ([-1, 1].some((side) => insideRock(d, { x: c.x + side * BOWL_HALF_W * k, y: rimY })))
+      out.push({ level: 'warn', text: 'A holding spot pokes into rock at one end (too big for that spot?).', at: c });
+  }
   {
     const k = bowlSize(d.bowl);
     const rimY = d.bowl.y - BOWL_RIM_H * k - 6;

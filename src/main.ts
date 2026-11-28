@@ -17,8 +17,8 @@ const DEV = import.meta.env.DEV;
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 let levelIndex = 0;
-const makeGame = (i: number, carry?: { lives: number; score: number }) =>
-  new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length, finalLevel: i + 1 === LEVELS.length, lives: carry?.lives, score: carry?.score, tutorial: i === 0 });
+const makeGame = (i: number, carry?: { score: number }) =>
+  new Game(LEVELS[i], { levelNumber: i + 1, hasNextLevel: i + 1 < LEVELS.length, finalLevel: i + 1 === LEVELS.length, score: carry?.score, tutorial: i === 0 });
 let game = makeGame(levelIndex);
 const renderer = new Renderer(canvas);
 const input = new Input(window);
@@ -212,8 +212,8 @@ function frame(now: number): void {
         ? levelIndex + 1
         : -1;
   if (goTo >= 0) {
-    // N (next level) carries lives and score over; number-key jumps start fresh
-    const carry = jump < 0 ? { lives: game.lives, score: game.score } : undefined;
+    // N (next level) carries the score over; number-key jumps start fresh
+    const carry = jump < 0 ? { score: game.score } : undefined;
     levelIndex = goTo;
     setGame(makeGame(levelIndex, carry));
   }

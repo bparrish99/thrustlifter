@@ -40,6 +40,10 @@ export interface LevelData {
    *  (`after: 'delivery'` is a leftover from when there was one after-delivery checkpoint; it's ignored.)
    *  If a level has none, a point above the bowl is used. */
   checkpoints?: { x: number; y: number; fuel?: number; after?: 'delivery' }[];
+  /** Holding spots: bowls like the goal bowl (a neutral colour) at (x, y = ground), sized like the
+   *  bowl. Set the orb down in one to park it there; once it has rested in one, a lost orb comes
+   *  back there instead of on its starting pedestal. */
+  cradles?: { x: number; y: number; size?: number }[];
   /** Target time in seconds: finishing under it earns POINTS.perTenthUnderTarget per tenth of a second. */
   targetTime?: number;
   /** Minimum fuel when you respawn on the launch pad. `checkpoints[].fuel` is the same for each
@@ -59,6 +63,8 @@ export interface Segment {
   pad: PadData | null;
   /** Part of the orb bowl (orb contact here is a set-down attempt, not an instant crash). */
   bowl: boolean;
+  /** Index into level.cradles when this edge belongs to a holding spot (soft for the orb, like the bowl). */
+  cradle?: number;
   /** Index into level.gates when this edge belongs to a gate (solid only while that gate is closed). */
   gate?: number;
   minX: number;
@@ -92,6 +98,8 @@ export interface Gate {
 export interface Level {
   data: LevelData;
   bowl: Bowl;
+  /** Holding spots: bowls like the goal bowl, where the orb can be parked. */
+  cradles: Bowl[];
   /** Pedestal the orb starts on (outline, solid). */
   pedestal: Vec[];
   gates: Gate[];
@@ -264,6 +272,14 @@ export function buildLevel(data: LevelData): Level {
     { x: o.x + 22, y: top + 70 },
   ];
   for (let i = 0; i < pedestal.length; i++) segments.push(seg(pedestal[i], pedestal[(i + 1) % pedestal.length], null));
+  const cradles = (data.cradles ?? []).map((c) => buildBowl(c.x, c.y, bowlSize(c)));
+  cradles.forEach((c, ci) => {
+    for (let i = 0; i < c.pts.length; i++) {
+      const sg = seg(c.pts[i], c.pts[(i + 1) % c.pts.length], null);
+      sg.cradle = ci;
+      segments.push(sg);
+    }
+  });
   const bowl = buildBowl(data.bowl.x, data.bowl.y, bowlSize(data.bowl));
   for (let i = 0; i < bowl.pts.length; i++) segments.push(seg(bowl.pts[i], bowl.pts[(i + 1) % bowl.pts.length], null, true));
 
@@ -283,7 +299,7 @@ export function buildLevel(data: LevelData): Level {
   });
 
   const maxY = polygons.length ? Math.max(...polygons.flat().map((p) => p.y)) : data.bowl.y + 200; // (no rock: a blank editor canvas)
-  return { data, bowl, pedestal, gates, maxY, polygons, outline, padPolygons, segments, startPad };
+  return { data, bowl, cradles, pedestal, gates, maxY, polygons, outline, padPolygons, segments, startPad };
 }
 
 /** Put every gate back to its starting state. */

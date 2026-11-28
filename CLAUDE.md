@@ -34,7 +34,7 @@ terms of how the game plays, not implementation.
 - `src/camera.ts`: the follow camera (framing, smoothing), kept pure so tests can fly it around
 - `src/input.ts`: keyboard + gamepad → `FrameInput`, using the remappable `src/bindings.ts` (actions, defaults, saved bindings, key/button names, `controlLabel` for hints)
 - `src/menu.ts`: front page (PLAY, starting-level picker, CONTROLS) and the Controls/remapping screen, an HTML overlay
-- `src/levels/*.json`: level data (polygons, pads, orb, bowl, turrets, gates, tanks, balloons, survivors, checkpoints); play order in `src/levels/order.json` (index.ts globs the folder; files not in order.json are "shelved": kept and editable, not played). Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
+- `src/levels/*.json`: level data (polygons, pads, orb, bowl, holding spots (`cradles`), turrets, gates, tanks, balloons, survivors, checkpoints); play order in `src/levels/order.json` (index.ts globs the folder; files not in order.json are "shelved": kept and editable, not played). Tests check new levels are flyable by walking planned routes for clearance (see the Deep Caverns tests).
 - `src/editor/`: in-game level editor (E). `tools.ts` = pure helpers (snapping, validation, JSON formatting, tight-spot analysis, tested); `editor.ts` = UI. `vite.config.ts` adds dev-only endpoints: `POST /__editor/save` writes level files, `POST /__editor/order` rewrites the play order.
 - `src/minimap.ts`: which part of a level the minimap frames (drawn by `drawMinimap` in render.ts)
 - `src/tutorial.ts`: first-level hints (which, when, where they point); drawn by `drawTip` in render.ts
@@ -42,8 +42,8 @@ terms of how the game plays, not implementation.
 
 ## Where things stand
 - **Live** at tl.booze-elroy.com (Netlify, deploys from the `release` branch only; see Builds). Friends are playing it.
-- Six levels in play, all built by the owner in the editor: WELCOME TO THE JUGGLE (tutorial), GOING DOWN, UNWELCOME PARTY, TECHNIQUE, LAYUP (big bowl, lob the orb in), PRICKLY. Proving Ground and Deep Caverns are shelved.
-- Recently added: dev save states (F2/F4); controls locked during the mission-complete tally; fuel tank 150; front page + remappable controls; editor Join/Cut rock, Clear level, bowl size; overlapping rocks act as one; unbreakable-on-bowl orb; smoothed camera (`camera.ts`); no launch-pad respawn after delivery; solid stocky hostages; glass-break sound.
+- Seven levels in play, all built by the owner in the editor: WELCOME TO THE JUGGLE (tutorial), GOING DOWN, UNWELCOME PARTY, TECHNIQUE, LAYUP (big bowl, lob the orb in), PRICKLY, TIGHT FIT (extremely hard; the owner beat it before shipping). Proving Ground and Deep Caverns are shelved.
+- Recently added: unlimited lives (no game over); orb holding spots (silver bowls, editor H; parking moves the orb's respawn point); 2000 survival bonus; dev save states (F2/F4); controls locked during the mission-complete tally; fuel tank 150; front page + remappable controls; editor Join/Cut rock, Clear level, bowl size; overlapping rocks act as one; unbreakable-on-bowl orb; smoothed camera (`camera.ts`); no launch-pad respawn after delivery; solid stocky hostages; glass-break sound.
 - Open ideas mentioned but not done: auto-return to the title after the last level (players get no hint after YOU IS WIN); making big bowls soak up bounce if long lobs bounce out too often; gamepad B on mission complete and gamepad menu navigation/rebinding untested with a real pad.
 - Milestones and open questions: see `DESIGN.md`.
 

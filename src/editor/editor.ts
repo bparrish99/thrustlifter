@@ -30,7 +30,7 @@ import {
  * into src/levels (dev server only). The session (draft, camera, file) survives page reloads.
  */
 
-type Tool = 'select' | 'rock' | 'cut' | 'join' | 'pad' | 'rescue' | 'orb' | 'bowl' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint';
+type Tool = 'select' | 'rock' | 'cut' | 'join' | 'pad' | 'rescue' | 'orb' | 'bowl' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint' | 'cradle';
 
 const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
   { id: 'select', key: '1', label: 'Select', hint: 'Click to select, drag to move. Shift+click a rock edge to add a point (drag to place it). Del removes.' },
@@ -41,6 +41,7 @@ const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
   { id: 'rescue', key: '4', label: 'Rescue pad', hint: 'Click the ground to add a rescue pad (1 guard and 2 hostages; set the guard count in its properties).' },
   { id: 'orb', key: '5', label: 'Orb', hint: 'Click the ground to move the orb (its pedestal stands there).' },
   { id: 'bowl', key: '6', label: 'Bowl', hint: 'Click the ground to move the orb bowl.' },
+  { id: 'cradle', key: 'h', label: 'Holding spot', hint: 'Click the ground to add a holding spot (a silver bowl to park the orb in).' },
   { id: 'turret', key: '7', label: 'Turret', hint: 'Click near any surface (floor, wall or ceiling) to mount a turret on it.' },
   { id: 'balloon', key: '8', label: 'Balloon', hint: 'Click anywhere in the air to add a balloon.' },
   { id: 'tank', key: '9', label: 'Fuel tank', hint: 'Click the ground to add a fuel tank.' },
@@ -52,7 +53,7 @@ const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
 type Sel =
   | { kind: 'vert'; poly: number; i: number }
   | { kind: 'gatevert'; gate: number; i: number }
-  | { kind: 'pad' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint'; i: number }
+  | { kind: 'pad' | 'turret' | 'balloon' | 'tank' | 'survivor' | 'gate' | 'checkpoint' | 'cradle'; i: number }
   | { kind: 'orb' | 'bowl' }
   | null;
 
@@ -512,6 +513,7 @@ export class Editor {
       case 'tank':
       case 'survivor':
       case 'bowl':
+      case 'cradle':
       case 'orb': {
         const g = snapToGround(this.draft, m);
         return g === null ? null : { x: this.snap(m.x), y: g };
@@ -547,6 +549,10 @@ export class Editor {
       }
       case 'orb':
         return box(d.orb.x - 24, d.orb.y - 16, 48, 16 + 16.5 + ORB_PEDESTAL_HEIGHT);
+      case 'cradle': {
+        const c = d.cradles![s.i];
+        return box(c.x - 40 * bowlSize(c), c.y - 34 * bowlSize(c), 80 * bowlSize(c), 34 * bowlSize(c));
+      }
       case 'bowl':
         return box(d.bowl.x - 40 * bowlSize(d.bowl), d.bowl.y - 34 * bowlSize(d.bowl), 80 * bowlSize(d.bowl), 34 * bowlSize(d.bowl));
       case 'checkpoint': {
@@ -580,6 +586,7 @@ export class Editor {
       ...(d.survivors ?? []).map((_, i) => ({ kind: 'survivor' as const, i })),
       ...(d.fuelTanks ?? []).map((_, i) => ({ kind: 'tank' as const, i })),
       { kind: 'orb' },
+      ...(d.cradles ?? []).map((_, i) => ({ kind: 'cradle' as const, i })),
       { kind: 'bowl' },
       ...d.pads.map((_, i) => ({ kind: 'pad' as const, i })),
       ...(d.gates ?? []).map((_, i) => ({ kind: 'gate' as const, i })),
@@ -697,6 +704,11 @@ export class Editor {
           d.bowl = { ...d.bowl, x: sp.x, y: gy };
           this.sel = { kind: 'bowl' };
         });
+      case 'cradle':
+        return onGround((gy) => {
+          (d.cradles ??= []).push({ x: sp.x, y: gy });
+          this.sel = { kind: 'cradle', i: d.cradles.length - 1 };
+        });
       case 'tank':
         return onGround((gy) => {
           (d.fuelTanks ??= []).push({ x: sp.x, y: gy });
@@ -795,6 +807,11 @@ export class Editor {
       case 'tank': {
         const g = ground();
         if (g !== null) Object.assign(d.fuelTanks![s.i], { x: sp.x, y: g });
+        break;
+      }
+      case 'cradle': {
+        const g = ground();
+        if (g !== null) Object.assign(d.cradles![s.i], { x: sp.x, y: g }); // keeps its size
         break;
       }
       case 'survivor': {
@@ -1072,6 +1089,10 @@ export class Editor {
         break;
       case 'tank':
         d.fuelTanks!.splice(s.i, 1);
+        break;
+      case 'cradle':
+        d.cradles!.splice(s.i, 1);
+        if (!d.cradles!.length) delete d.cradles;
         break;
       case 'survivor':
         d.survivors!.splice(s.i, 1);
@@ -1405,12 +1426,22 @@ export class Editor {
             if (sz === 1) delete d.bowl.size;
             else d.bowl.size = sz;
           }, 0.25);
-          kids.push(el('div', { class: 'ed-note' }, 'Bigger bowl = easier to drop or lob the orb into. It still breaks if it lands too hard.'));
+          kids.push(el('div', { class: 'ed-note' }, 'Bigger bowl = easier to drop or lob the orb into. The orb can’t break on the bowl, however hard it lands.'));
           break;
         }
         case 'balloon': {
           const b = d.balloons![s.i];
           num('Drift range', () => b.patrol ?? config.balloonPatrol, (v) => (b.patrol = Math.max(0, v)), 10);
+          break;
+        }
+        case 'cradle': {
+          const c = d.cradles![s.i];
+          num(`Size (${BOWL_MIN_SIZE}–${BOWL_MAX_SIZE}×)`, () => bowlSize(c), (v) => {
+            const sz = Math.round(Math.min(BOWL_MAX_SIZE, Math.max(BOWL_MIN_SIZE, v)) * 4) / 4;
+            if (sz === 1) delete c.size;
+            else c.size = sz;
+          }, 0.25);
+          kids.push(el('div', { class: 'ed-note' }, 'Holding spot: set the orb down in it to park it. Once it has rested here, a lost orb comes back here instead of on its pedestal.'));
           break;
         }
         case 'tank': {
@@ -1526,6 +1557,8 @@ function selName(s: NonNullable<Sel>): string {
       return 'gate corner';
     case 'pad':
       return 'pad';
+    case 'cradle':
+      return 'holding spot';
     default:
       return s.kind;
   }

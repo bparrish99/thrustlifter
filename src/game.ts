@@ -1,6 +1,6 @@
 import { Tutorial } from './tutorial';
 import { config } from './config';
-import { buildLevel, resetGates, segmentsNear, type Gate, type Level, type LevelData, type PadData, type Segment } from './level';
+import { buildLevel, resetGates, segmentsNear, type Bowl, type Gate, type Level, type LevelData, type PadData, type Segment } from './level';
 import { add, closestPointSegment, deg, dist, distPointSegment, dot, len, scale, segmentIntersectionT, segmentsIntersect, sub, type Vec } from './math';
 import {
   ANCHOR,
@@ -64,7 +64,7 @@ export interface Turret {
 
 /** Things that happened this frame, for sound (and anything else that wants to react). */
 export type GameEvent =
-  | { type: 'tallyRescue' | 'tallyTime' | 'tallyFuel' | 'tallyDone' | 'gate' | 'board' | 'rescued' | 'tankEmpty' | 'enemyLaunch' | 'balloonPop' | 'extraLife' | 'missile' | 'shieldHit' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'liftoff' | 'land'; pos?: Vec; value?: number };
+  | { type: 'tallyRescue' | 'tallyTime' | 'tallyFuel' | 'tallySurvival' | 'tallyDone' | 'gate' | 'board' | 'rescued' | 'tankEmpty' | 'enemyLaunch' | 'balloonPop' | 'missile' | 'shieldHit' | 'enemyShot' | 'tether' | 'release' | 'orbLost' | 'delivered' | 'parked' | 'complete' | 'turretDown' | 'heliDown' | 'impact' | 'liftoff' | 'land'; pos?: Vec; value?: number };
 
 export interface Survivor {
   pos: Vec; // feet
@@ -159,15 +159,13 @@ export interface Message {
   life: number;
 }
 
-export type Phase = 'playing' | 'dead' | 'complete' | 'gameover';
-export const START_LIVES = 3;
+/** No lives and no game over (owner's call, 2026-11-27: the game is hard enough to be a rage game): you just respawn. */
+export type Phase = 'playing' | 'dead' | 'complete';
 /** Seconds to linger on the mission-complete results before the next level starts. */
 export const ADVANCE_DELAY = 3;
-export const POINTS = { turret: 100, balloon: 200, guard: 300, rescue: 500, perTenthUnderTarget: 10, perFuelTick: 25 };
+export const POINTS = { turret: 100, balloon: 200, guard: 300, rescue: 500, perTenthUnderTarget: 10, perFuelTick: 25, survival: 2000 };
 /** LEDs on the fuel gauge (fuel bonus counts whole lit ticks). */
 export const FUEL_TICKS = 24;
-/** An extra life every this many points. */
-export const EXTRA_LIFE_EVERY = 10000;
 
 export const STEP = 1 / 240;
 export const SHIELD_RADIUS = 56;
@@ -195,9 +193,11 @@ export const COLORS = {
   spark: ['#ffffff', '#ffd23f', '#ff8a3d', '#ff3df2'],
   dust: '#7fd6ff',
 };
+/** Holding spots (orb parking bowls): a neutral silver, so they don't read as the goal bowl. */
+export const CRADLE_COLOR = '#cfd8e8';
 
 /** Game fields a save state leaves alone (fixed for the level, or per-frame). */
-const SAVESTATE_SKIP = new Set(['cfg', 'level', 'tutorial', 'levelNumber', 'hasNextLevel', 'finalLevel', 'startLives', 'startScore', 'events']);
+const SAVESTATE_SKIP = new Set(['cfg', 'level', 'tutorial', 'levelNumber', 'hasNextLevel', 'finalLevel', 'startScore', 'events']);
 export interface SaveState {
   data: LevelData;
   state: Record<string, unknown>;
@@ -248,7 +248,7 @@ export class Game {
   readyForNext = false;
   /** End-of-level bonus tally in progress (null until the level is complete). */
   tally: {
-    stage: 'intro' | 'rescue' | 'time' | 'pause' | 'fuel' | 'done';
+    stage: 'intro' | 'rescue' | 'time' | 'pause' | 'fuel' | 'survival' | 'done';
     t: number;
     /** Rescued hostages still to pay out, and how many there were. */
     rescues: number;
@@ -259,12 +259,13 @@ export class Game {
     ticksTotal: number;
     acc: number;
     sound: number;
+    /** Finished the level without dying: SURVIVAL BONUS, paid last in one hit. */
+    survival: boolean;
+    survivalPaid: boolean;
   } | null = null;
   /** Bonus time remaining (seconds). Starts at the level's target time, counts down from first lift-off, stops at zero. */
   bonusTime = 0;
   launched = false;
-  /** Visual pulse on the lives display after earning one. */
-  lifeFlash = 0;
   fuelBonus = 0;
   /** Where you last died (picks the nearest respawn point). */
   deathPos: Vec | null = null;
@@ -296,22 +297,18 @@ export class Game {
   readonly hasNextLevel: boolean;
   /** The last level in the game (its mission-complete banner is the end-of-game one). */
   readonly finalLevel: boolean;
-  /** Lives remaining (including the current one). Carried from level to level. */
-  lives = START_LIVES;
   /** Score (rules to be decided; carried from level to level). */
   score = 0;
-  private readonly startLives: number;
   private readonly startScore: number;
 
   /** First-level hints (null on other levels). Survives deaths and restarts, so each hint shows once per visit. */
   readonly tutorial: Tutorial | null;
 
-  constructor(data: LevelData, opts: { levelNumber?: number; hasNextLevel?: boolean; finalLevel?: boolean; lives?: number; score?: number; tutorial?: boolean } = {}) {
+  constructor(data: LevelData, opts: { levelNumber?: number; hasNextLevel?: boolean; finalLevel?: boolean; score?: number; tutorial?: boolean } = {}) {
     this.levelNumber = opts.levelNumber ?? 1;
     this.tutorial = opts.tutorial ? new Tutorial() : null;
     this.hasNextLevel = opts.hasNextLevel ?? false;
     this.finalLevel = opts.finalLevel ?? false;
-    this.startLives = opts.lives ?? START_LIVES;
     this.startScore = opts.score ?? 0;
     this.level = buildLevel(data);
     this.restart();
@@ -319,7 +316,7 @@ export class Game {
 
   /**
    * Dev save states: a deep copy of everything that changes during play (heli, orb, enemies, fuel,
-   * lives, score, timers...), restorable any number of times. Not the level geometry, tuning or
+   * score, timers...), restorable any number of times. Not the level geometry, tuning or
    * tutorial. Only loads back into the same level.
    */
   saveState(): SaveState {
@@ -343,7 +340,7 @@ export class Game {
   }
 
   get alive(): boolean {
-    return this.phase !== 'dead' && this.phase !== 'gameover';
+    return this.phase !== 'dead';
   }
 
   restart(): void {
@@ -393,8 +390,6 @@ export class Game {
     this.shards = [];
     this.events = [];
     this.deaths = 0;
-    // after a game over, R starts this level over with a full set of lives
-    this.lives = this.phase === 'gameover' ? START_LIVES : this.startLives;
     this.score = this.startScore;
     this.time = 0;
     this.orbLostTimer = 0;
@@ -507,21 +502,12 @@ export class Game {
     const orb = this.orb;
     this.time += dt;
     this.phaseTime += dt;
-    if (this.launched && this.phase !== 'complete' && this.phase !== 'gameover') this.bonusTime = Math.max(0, this.bonusTime - dt);
+    if (this.launched && this.phase !== 'complete') this.bonusTime = Math.max(0, this.bonusTime - dt);
     h.mass = cfg.heliMass;
     orb.mass = cfg.orbMass;
 
-    if (this.phase === 'gameover') {
-      // waiting for R
-    } else if (this.phase === 'dead') {
-      if (this.phaseTime >= RESPAWN_DELAY) {
-        if (this.lives <= 0) {
-          this.phase = 'gameover';
-          this.flash('GAME OVER', 'press R to try again', '#ff4a4a', 1e9);
-        } else {
-          this.respawn();
-        }
-      }
+    if (this.phase === 'dead') {
+      if (this.phaseTime >= RESPAWN_DELAY) this.respawn();
     } else {
       // respawned at a checkpoint: hang in place until the player touches anything
       if (this.held && (input.tiltAxis !== 0 || input.rotor > 0 || input.dive > 0 || input.fire || input.flip || input.pickup)) this.held = false;
@@ -711,7 +697,7 @@ export class Game {
       const p = orb.pos;
       for (const s of segmentsNear(this.level, p.x - r, p.y - r, p.x + r, p.y + r)) {
         if (distPointSegment(p, s.a, s.b) >= r - 0.5) continue;
-        if (s.bowl) return this.bowlContact();
+        if (s.bowl || s.cradle !== undefined) return this.bowlContact();
         return this.loseOrb('it hit the ground');
       }
       for (const t of this.turrets) {
@@ -735,7 +721,7 @@ export class Game {
     }
   }
 
-  /** Carried orb touched the bowl: it lets go and the bowl takes it. The bowl is made of something
+  /** Carried orb touched the bowl (or a holding spot): it lets go and the bowl takes it. The bowl is made of something
    *  the orb is immune to, so no hit on it is too hard (owner's call, for lobbing it in from afar). */
   private bowlContact(): void {
     this.release();
@@ -759,13 +745,15 @@ export class Game {
     const r = cfg.orbRadius;
     integrate(orb, { x: 0, y: 0 }, cfg.gravity, cfg.orbDrag, dt);
 
-    // Only the bowl is soft: touching ground or a turret destroys the orb.
+    // Only the bowl and holding spots are soft: touching ground or a turret destroys the orb.
     const contacts: { n: Vec; pen: number }[] = [];
+    let onCradle: number | undefined;
     for (const s of segmentsNear(this.level, orb.pos.x - r, orb.pos.y - r, orb.pos.x + r, orb.pos.y + r)) {
       const c = closestPointSegment(orb.pos, s.a, s.b);
       const d = dist(orb.pos, c);
       if (d >= r || d < 1e-6) continue;
-      if (!s.bowl) return this.loseOrb('it hit the ground');
+      if (!s.bowl && s.cradle === undefined) return this.loseOrb('it hit the ground');
+      if (s.cradle !== undefined) onCradle = s.cradle;
       contacts.push({ n: { x: (orb.pos.x - c.x) / d, y: (orb.pos.y - c.y) / d }, pen: r - d });
     }
     for (const t of this.turrets) {
@@ -786,22 +774,27 @@ export class Game {
       orb.vel.y = ty * keep - e * vn * n.y;
     }
 
-    // delivered once it comes to rest in the cup
+    // delivered once it comes to rest in the bowl's cup; parked once it rests in a holding spot
     const bowl = this.level.bowl;
-    const inCup = Math.abs(orb.pos.x - bowl.cx) < bowl.innerR && orb.pos.y > bowl.rimY;
-    if (inCup && len(orb.vel) < 25) {
+    const slow = len(orb.vel) < 25;
+    const inside = [bowl, ...this.level.cradles].find((b) => Math.abs(orb.pos.x - b.cx) < b.innerR && orb.pos.y > b.rimY);
+    if (inside && slow) {
       this.settleTime += dt;
-      if (this.settleTime > 0.35) this.deliver();
-    } else if (contacts.length && !inCup && len(orb.vel) < 25) {
-      // balanced on the bowl's rim: tip it in
-      orb.vel.x += Math.sign(bowl.cx - orb.pos.x) * 60 * dt;
+      if (this.settleTime > 0.35) {
+        if (inside === bowl) this.deliver();
+        else this.park(inside);
+      }
+    } else if (contacts.length && !inside && slow) {
+      // balanced on a rim: tip it in
+      const cup = onCradle !== undefined ? this.level.cradles[onCradle] : bowl;
+      orb.vel.x += Math.sign(cup.cx - orb.pos.x) * 60 * dt;
       this.settleTime = 0;
     } else {
       this.settleTime = 0;
     }
   }
 
-  /** Orb destroyed (carried or dropped): the pilot lives, the orb respawns on its pedestal. */
+  /** Orb destroyed (carried or dropped): the pilot lives, the orb respawns on its pedestal (or the last holding spot it rested on). */
   private loseOrb(why: string): void {
     const orb = this.orb;
     if (orb.delivered || this.orbLostTimer > 0) return;
@@ -821,6 +814,20 @@ export class Game {
     orb.pos = { x: -99999, y: -99999 };
     orb.vel = { x: 0, y: 0 };
     this.orbLostTimer = 2;
+  }
+
+  /** The orb settled on a holding spot: it stays there, and from now on a lost orb comes back here. */
+  private park(c: Bowl): void {
+    const orb = this.orb;
+    orb.free = false;
+    orb.attached = false;
+    orb.vel = { x: 0, y: 0 };
+    orb.pos = { ...c.rest };
+    this.settleTime = 0;
+    const moved = orb.home.x !== c.rest.x || orb.home.y !== c.rest.y;
+    orb.home = { ...c.rest };
+    this.ring(c.rest, moved ? 80 : 50, CRADLE_COLOR, 0.6);
+    this.events.push({ type: 'parked', pos: { ...c.rest } });
   }
 
   private deliver(): void {
@@ -854,7 +861,7 @@ export class Game {
     this.timeBonus = tenthsUnder * POINTS.perTenthUnderTarget;
     const ticks = Math.floor((Math.max(0, this.fuel) / this.cfg.fuelMax) * FUEL_TICKS + 1e-6);
     this.fuelBonus = ticks * POINTS.perFuelTick;
-    this.tally = { stage: 'intro', t: 0, rescues, rescuesTotal: rescues, tenths: tenthsUnder, tenthsTotal: tenthsUnder, ticks, ticksTotal: ticks, acc: 0, sound: 0 };
+    this.tally = { stage: 'intro', t: 0, rescues, rescuesTotal: rescues, tenths: tenthsUnder, tenthsTotal: tenthsUnder, ticks, ticksTotal: ticks, acc: 0, sound: 0, survival: this.deaths === 0, survivalPaid: false };
     this.bonusTime = tenthsUnder / 10;
     this.fuel = (ticks / FUEL_TICKS) * this.cfg.fuelMax;
     this.ring(h.pos, 160, '#3dff8a', 1.2);
@@ -869,7 +876,7 @@ export class Game {
     return this.finalLevel ? 'YOU IS WIN!!?!' : 'MISSION COMPLETE';
   }
 
-  /** End-of-level tally: pay out each rescued hostage (slowly, one by one), then drain the time bonus, then the fuel gauge tick by tick, into the score. */
+  /** End-of-level tally: pay out each rescued hostage (slowly, one by one), then drain the time bonus, then the fuel gauge tick by tick, then the survival bonus (no deaths), into the score. */
   private stepTally(dt: number): void {
     const t = this.tally;
     if (!t) return;
@@ -923,11 +930,7 @@ export class Game {
     if (t.stage === 'pause') {
       if (t.t > 0.6) {
         if (t.ticks > 0) Object.assign(t, { stage: 'fuel', t: 0 });
-        else {
-          t.stage = 'done';
-          t.t = 0;
-          this.finishTally();
-        }
+        else this.afterFuel(t);
       }
       return;
     }
@@ -939,11 +942,32 @@ export class Game {
         this.award(POINTS.perFuelTick, this.heli.pos);
         this.events.push({ type: 'tallyFuel', value: t.ticksTotal - t.ticks });
       }
-      if (t.ticks <= 0 && t.t > 0.5) {
+      if (t.ticks <= 0 && t.t > 0.5) this.afterFuel(t);
+      return;
+    }
+    if (t.stage === 'survival') {
+      // one big stamp: no deaths this level
+      if (!t.survivalPaid && t.t >= 0.4) {
+        t.survivalPaid = true;
+        t.t = 0;
+        this.award(POINTS.survival, this.heli.pos);
+        this.events.push({ type: 'tallySurvival' });
+      }
+      if (t.survivalPaid && t.t > 1.1) {
         t.stage = 'done';
         t.t = 0;
         this.finishTally();
       }
+    }
+  }
+
+  /** Fuel paid out: the survival bonus if you earned it, else the tally's over. */
+  private afterFuel(t: NonNullable<Game['tally']>): void {
+    t.t = 0;
+    if (t.survival) t.stage = 'survival';
+    else {
+      t.stage = 'done';
+      this.finishTally();
     }
   }
 
@@ -971,7 +995,6 @@ export class Game {
     this.phase = 'dead';
     this.phaseTime = 0;
     this.deaths++;
-    this.lives--;
     this.lastCrash = 'STRANDED';
     this.strandedTime = 0;
     // anyone aboard climbs back out and waits where you landed
@@ -986,7 +1009,6 @@ export class Game {
     this.phase = 'dead';
     this.phaseTime = 0;
     this.deaths++;
-    this.lives--;
     this.shake = 1;
     this.lastCrash = reason;
     this.explode(h.pos, 90, 420);
@@ -1336,16 +1358,9 @@ export class Game {
     this.events.push({ type: 'balloonPop', pos: b.pos });
   }
 
-  /** Add points (and any extra lives they earn). */
-  award(points: number, at: Vec): void {
-    const before = Math.floor(this.score / EXTRA_LIFE_EVERY);
+  /** Add points. (`at` is where they were earned; kept for callers, no popups by design.) */
+  award(points: number, _at: Vec): void {
     this.score += points;
-    const gained = Math.floor(this.score / EXTRA_LIFE_EVERY) - before;
-    if (gained > 0) {
-      this.lives += gained;
-      this.events.push({ type: 'extraLife', pos: at });
-      this.lifeFlash = 1;
-    }
   }
 
   /** True if this pad had survivors near it and none are still waiting there. */
@@ -1945,7 +1960,6 @@ export class Game {
     this.rotorPhase += (9 + this.rotorSpeed * 18) * dt; // brisk idle, whirls at full throttle
     this.shake = Math.max(0, this.shake - dt * 2.2);
     this.screenFlash = Math.max(0, this.screenFlash - dt * 4);
-    this.lifeFlash = Math.max(0, this.lifeFlash - dt * 0.6);
     this.shieldFlash = Math.max(0, this.shieldFlash - dt * 3);
     if (!this.alive) this.shield = false;
     // a gate due to seal waits until you (and the orb) are clear of it, so it can't crush you

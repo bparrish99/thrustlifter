@@ -42,8 +42,8 @@ export const DEFAULTS = {
   fuelRespawnMin: 12, // safety net: if you respawn with less than this, you get topped up to it
 
   // Landing (skids on a pad only)
-  landMaxSpeed: 120,
-  landMaxTiltDeg: 10,
+  landMaxSpeed: 130,
+  landMaxTiltDeg: 15,
 
   // Weapons
   missileLaunchSpeed: 115, // leaves the tube slow...

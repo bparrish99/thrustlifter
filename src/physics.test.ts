@@ -1126,7 +1126,31 @@ describe('scoring', () => {
     const fuelBonus = Math.floor((fuelAtLanding / cfg.fuelMax) * 24 + 1e-6) * 25;
     expect(g.fuelBonus).toBe(fuelBonus);
     expect(fuelBonus).toBeGreaterThan(0);
-    expect(g.score).toBe(2 * 500 + bonus + fuelBonus);
+    expect(g.score).toBe(2 * 500 + bonus + fuelBonus + 2000); // + survival bonus: no deaths
+  });
+
+  it('2000 survival bonus only if you never died on the level', () => {
+    const finish = (deaths: number) => {
+      const g = new Game(noGuards);
+      g.balloons = [];
+      g.turrets.forEach((t) => (t.alive = false));
+      g.deaths = deaths;
+      g.orb.delivered = true;
+      g.heli.landed = false; g.onLaunchPad = false;
+      g.heli.pos = { x: 280, y: 790 };
+      g.heli.vel = { x: 0, y: 40 };
+      for (let i = 0; i < 60 && !g.heli.landed; i++) g.update({ ...idle, rotor: 0.3 }, 1 / 60);
+      expect(g.phase).toBe('complete');
+      let sawStage = false;
+      for (let i = 0; i < 15 * 60 && g.tally!.stage !== 'done'; i++) {
+        g.update(idle, 1 / 60);
+        if (g.tally!.stage === 'survival') sawStage = true;
+      }
+      expect(g.tally!.stage).toBe('done');
+      return { score: g.score - g.timeBonus - g.fuelBonus, sawStage };
+    };
+    expect(finish(0)).toEqual({ score: 2000, sawStage: true });
+    expect(finish(1)).toEqual({ score: 0, sawStage: false });
   });
 });
 
@@ -1157,16 +1181,22 @@ describe('rescue bonus in the tally', () => {
   });
 });
 
-describe('extra lives', () => {
-  it('an extra life every 10,000 points', () => {
-    const g = new Game(provingGround as LevelData);
-    const l0 = g.lives;
-    g.award(9900, { x: 0, y: 0 });
-    expect(g.lives).toBe(l0);
-    g.award(100, { x: 0, y: 0 });
-    expect(g.lives).toBe(l0 + 1);
-    g.award(20000, { x: 0, y: 0 });
-    expect(g.lives).toBe(l0 + 3);
+describe('unlimited lives', () => {
+  it('you can crash over and over: always a respawn, never a game over', () => {
+    const g = new Game(noGuards);
+    g.balloons = [];
+    g.turrets.forEach((t) => (t.alive = false));
+    for (let n = 1; n <= 12; n++) {
+      g.heli.landed = false;
+      g.onLaunchPad = false;
+      g.held = false;
+      g.heli.pos = { x: 700, y: 600 };
+      g.heli.vel = { x: 0, y: 400 };
+      for (let i = 0; i < 10 * 60 && g.deaths < n; i++) g.update({ ...idle, dive: 1 }, 1 / 60);
+      expect(g.deaths).toBe(n);
+      for (let i = 0; i < 4 * 60 && g.phase !== 'playing'; i++) g.update(idle, 1 / 60);
+      expect(g.phase).toBe('playing');
+    }
   });
 });
 
@@ -1339,7 +1369,7 @@ describe('turret mounting', () => {
 });
 
 describe('dev save states', () => {
-  it('loading puts the whole run back: heli, fuel, lives, score, dead enemies', () => {
+  it('loading puts the whole run back: heli, fuel, deaths, score, dead enemies', () => {
     const g = new Game(PROVING_GROUND);
     g.heli.landed = false;
     g.onLaunchPad = false;
@@ -1350,7 +1380,7 @@ describe('dev save states', () => {
     g.score = 1234;
     g.fuel = 37;
     const s = g.saveState();
-    const before = { pos: { ...g.heli.pos }, vel: { ...g.heli.vel }, lives: g.lives, time: g.time, enemies: g.enemies.length };
+    const before = { pos: { ...g.heli.pos }, vel: { ...g.heli.vel }, time: g.time, enemies: g.enemies.length };
     // fly into the ground until a life is lost, and let the dead turret "come back" (as if restarted)
     for (let i = 0; i < 20 * 60 && g.deaths === 0; i++) g.update({ ...idle, dive: 1 }, 1 / 60);
     expect(g.deaths).toBe(1);
@@ -1358,7 +1388,6 @@ describe('dev save states', () => {
     expect(g.loadState(s)).toBe(true);
     expect(g.heli.pos).toEqual(before.pos);
     expect(g.heli.vel).toEqual(before.vel);
-    expect(g.lives).toBe(before.lives);
     expect(g.deaths).toBe(0);
     expect(g.phase).toBe('playing');
     expect(g.score).toBe(1234);
@@ -1384,5 +1413,100 @@ describe('dev save states', () => {
     const a = new Game(PROVING_GROUND);
     const b = new Game(DEEP_CAVERNS);
     expect(b.loadState(a.saveState())).toBe(false);
+  });
+});
+
+describe('holding spots', () => {
+  // a holding spot (a bowl) on the flat ground just right of Proving Ground's orb pedestal
+  const CX = 2240;
+  const withCradle = { ...noGuards, cradles: [{ x: CX, y: 880 }] } as LevelData;
+  const setup = () => {
+    const g = new Game(withCradle);
+    g.balloons = [];
+    g.turrets.forEach((t) => (t.alive = false));
+    g.update(idle, 1 / 60);
+    g.heli.landed = true; // parked on the launch pad, far away: only the orb moves
+    return g;
+  };
+  /** Let the orb go at (x, rim - h), and run until it settles or is lost. */
+  const drop = (g: Game, x: number, h: number, vx = 0) => {
+    const c = g.level.cradles[0];
+    Object.assign(g.orb, { pos: { x, y: c.rimY - h }, vel: { x: vx, y: 0 }, attached: false, free: true });
+    const events: string[] = [];
+    for (let i = 0; i < 4 * 60 && (g.orb.free || events.length === 0); i++) {
+      g.update(idle, 1 / 60);
+      events.push(...g.events.map((e) => e.type));
+      g.events.length = 0;
+    }
+    return events;
+  };
+
+  it('an orb dropped in parks there and becomes the respawn point (not a delivery)', () => {
+    const g = setup();
+    const c = g.level.cradles[0];
+    const ev = drop(g, CX, 40);
+    expect(ev).toContain('parked');
+    expect(ev).not.toContain('orbLost');
+    expect(g.orb.delivered).toBe(false);
+    expect(g.orb.free).toBe(false);
+    expect(g.orb.pos).toEqual(c.rest);
+    expect(g.orb.home).toEqual(c.rest);
+  });
+
+  it('landing on the rim, it rolls in', () => {
+    const g = setup();
+    const c = g.level.cradles[0];
+    const ev = drop(g, CX + c.innerR + 6, 30);
+    expect(ev).toContain('parked');
+    expect(g.orb.pos).toEqual(c.rest);
+  });
+
+  it('a hard throw into it does not break the orb', () => {
+    const g = setup();
+    const ev = drop(g, CX - 60, 120, 60); // lands in the cup at ~235 down
+    expect(ev).not.toContain('orbLost');
+  });
+
+  it('miss it and it hits the rock: lost, back on its pedestal', () => {
+    const g = setup();
+    const ev = drop(g, CX + 70, 30);
+    expect(ev).toContain('orbLost');
+    for (let i = 0; i < 3 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.orb.pos).toEqual(withCradle.orb);
+  });
+
+  it('after parking, a lost orb comes back in the holding spot, not on the pedestal', () => {
+    const g = setup();
+    drop(g, CX, 40);
+    // pick it up and smash it into the ground
+    Object.assign(g.orb, { pos: { x: 2180, y: 868 }, vel: { x: 0, y: 0 }, attached: false, free: true });
+    for (let i = 0; i < 60 && g.orb.pos.x > -9999; i++) g.update(idle, 1 / 60);
+    expect(g.orb.pos.x).toBeLessThan(-9999); // gone
+    for (let i = 0; i < 3 * 60; i++) g.update(idle, 1 / 60);
+    expect(g.orb.pos).toEqual(g.level.cradles[0].rest);
+  });
+
+  it('a carried orb touching a holding spot is let go (not destroyed)', () => {
+    const g = setup();
+    const c = g.level.cradles[0];
+    g.heli.landed = false;
+    g.heli.pos = { x: CX + c.halfW - 4, y: 0 };
+    g.heli.vel = { x: 0, y: 0 };
+    const hook = heliPoint(g.heli, ANCHOR);
+    g.heli.pos.y += c.rimY - 10 - (hook.y + g.cfg.rodLength); // orb hangs at rod length, just into the bowl's lip
+    const hk = heliPoint(g.heli, ANCHOR);
+    Object.assign(g.orb, { pos: { x: hk.x, y: hk.y + g.cfg.rodLength }, vel: { x: 0, y: 0 }, attached: true, free: false });
+    g.onLaunchPad = false;
+    g.update(idle, 1 / 60);
+    expect(g.orb.attached).toBe(false);
+    expect(g.orb.pos.x).toBeGreaterThan(-9999);
+  });
+
+  it('R puts the orb back on its original pedestal', () => {
+    const g = setup();
+    drop(g, CX, 40);
+    g.update({ ...idle, restart: true }, 1 / 60);
+    expect(g.orb.pos).toEqual(withCradle.orb);
+    expect(g.orb.home).toEqual(withCradle.orb);
   });
 });
